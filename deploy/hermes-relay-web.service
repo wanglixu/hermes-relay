@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes Relay 前端（Next.js standalone, 127.0.0.1:3220）
+Documentation=file:/opt/hermes-relay/web/README.md
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes-relay/web/.next/standalone
+Environment=NODE_ENV=production
+Environment=PORT=3220
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/local/bin/node server.js
+Restart=always
+RestartSec=2
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

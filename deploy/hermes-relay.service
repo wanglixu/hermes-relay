@@ -1,0 +1,22 @@
+[Unit]
+Description=Hermes Relay（后端，进程内 Hermes Web UI）
+Documentation=file:///opt/hermes-relay/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 必须用 Hermes 自带的 Python：进程内要 import run_agent
+ExecStart=/usr/local/lib/hermes-agent/venv/bin/python /opt/hermes-relay/server.py
+WorkingDirectory=/opt/hermes-relay
+Environment=HERMES_RELAY_HOST=127.0.0.1
+Environment=HERMES_RELAY_PORT=8788
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+KillMode=control-group
+StandardOutput=append:/var/log/hermes-relay.log
+StandardError=append:/var/log/hermes-relay.log
+
+[Install]
+WantedBy=multi-user.target

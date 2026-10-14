@@ -1,0 +1,725 @@
+@import 'tailwindcss';
+
+/* 字体全部自托管，不走 Google Fonts（2026-10-09 方案 A：整站统一黑体）。
+   - 拉丁：Source Sans 3（在 web/fonts/，由 app/layout.tsx 的 next/font/local 加载，
+     Next 会顺带生成一份度量对齐的兜底字体，字体晚到时换行位置不变）
+   - 中文：Noto Sans SC 思源黑体（public/fonts/noto-sans-sc.css，按 unicode-range 切 101 片/字重）
+   - 等宽：Sarasa Mono SC 等距更纱黑体（public/fonts/sarasa-mono-sc.css，中文正好占 2 个英文字符宽，
+     表格 / ASCII 图 / 代码注释能对齐）
+   分片 CSS 由 <link> 在 app/layout.tsx 里引入；字体文件不进 git，用 fonts/fetch-fonts.sh 生成。 */
+
+/* ─────────────────────────────────────────────────────────────
+   令牌层：唯一真相。颜色/字体/圆角/正文排版都只在这里定义。
+   换主题、改密度、加浅色，都只动这一段。
+   ───────────────────────────────────────────────────────────── */
+@theme {
+  /* 颜色：唯一的一套「暖纸」。2026-10-09 起深色 / 冷纸两套已删除，见 AI_CHANGES。 */
+  --color-page: #fbfaf7;
+  --color-panel: #f7f5f0;
+  --color-panel-think: #f3f0e8;
+  --color-raised: #efece4;
+  --color-line: #e6e2d8;
+  --color-line-strong: #d5cfc1;
+  --color-think-line: #d6cfc0;
+  --color-ink: #2d2d2a;
+  --color-ink-2: #57554e;
+  --color-muted: #6f6d66;
+  --color-faint: color-mix(in srgb, #6f6d66 78%, #fbfaf7);
+  --color-accent: #8c5a3b;
+  --color-accent-text: #7d4f33;
+  --color-on-accent: #fbfaf7;
+  --color-think: #7a6f5e;
+  --color-danger: #a63d2f;
+  --color-ink-strong: #1f1f1c;
+  --color-danger-text: #8f3527;
+  /* 顶栏状态点：后端健康检查通过时用。只用于这一处，不拿来当强调色。 */
+  --color-ok: #3d8f62;
+  /* 输入框浮起时的底色：比纸面（--color-page）更白一档，靠外阴影和纸面分开 */
+  --color-input: #fffdf8;
+
+  /* 圆角 */
+  --radius-card: 4px;
+  --radius-ctl: 3px;
+  /* 输入框专用：胶囊级大圆角。刻意比全站大，规则写在 design-system/hermes-relay/MASTER.md */
+  --radius-composer: 20px;
+
+  /* 正文列与输入框共用的宽度（改一处两边同步）。值是**容器宽（含左右各 40px 内边距）**，
+     所以正文文字实际宽度 = 这个值 - 80px = 768px（用户 2026-10-09 指定的口径）。
+     用 px 而不是 ch：ch 是按「元素自己的字体」算的，消息列和输入框的 font-size 不同，
+     会算出两个宽度 —— 而这里要的正是「输入框和正文一样宽」。
+     沿革：原来两边各自写 calc(68ch + 120px)（正文约 584px）→ 980px（正文 900）→ 现在 848px。 */
+  --container-read: 848px;
+
+  /* 字体（2026-10-09 方案 A：整站统一黑体，全部自托管）
+     --font-latin 由 app/layout.tsx 的 next/font/local 注入（Source Sans 3 + 度量对齐的兜底字体）。
+     两个中文字体走 public/fonts/*.css 里的分片 @font-face（unicode-range），浏览器按需下片。 */
+  --font-sans: var(--font-latin), 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+  --font-ui: var(--font-sans);
+  --font-read: var(--font-sans);
+  --font-title: var(--font-sans);
+  /* 代码 / 时间 / 数字：等距更纱黑体，中文正好 2× 英文宽，表格与注释能对齐。
+     栈里不能放别的比例等宽字体（放前面会抢走拉丁字符，宽度就不一致了）。 */
+  --font-mono: 'Sarasa Mono SC', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 正文排版 */
+  --text-read: 16.5px;
+  /* 行高：中文比拉丁更需要喘气，1.72（≈28.4px）兼顾密度与舒展 */
+  --leading-read: 1.72;
+  --text-ui: 15px;
+
+  /* 动效 */
+  --animate-blink: blink 1.05s steps(2, start) infinite;
+  --animate-dot: dot 1.3s ease-in-out infinite;
+  --animate-fade-in: fade-in 160ms ease-out both;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes blink {
+    to {
+      visibility: hidden;
+    }
+  }
+  @keyframes dot {
+    0%,
+    100% {
+      opacity: 0.3;
+      transform: translateY(0);
+    }
+    50% {
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+  }
+}
+
+/* 正文栏宽：非标准命名空间，单独声明一个工具类 */
+@utility measure-read {
+  max-width: 68ch;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   配色：只有一套「暖纸」（2026-10-09 起深色 / 冷纸已删除）。
+   颜色值都在上面 @theme 里；这一段只补三样 Tailwind 不接管的东西：
+   color-scheme、纸张纤维、两层物理阴影。
+   ───────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* 纸张纤维：灰度噪声。必须 feColorMatrix 去色，否则铺出来是彩色噪点，像屏幕坏了 */
+  --fiber: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23f)'/%3E%3C/svg%3E");
+
+  --shadow-card: 0 1px 2px rgba(45, 45, 42, 0.05), 0 3px 10px -4px rgba(45, 45, 42, 0.1);
+  --shadow-in: inset 0 2px 7px rgba(45, 45, 42, 0.075), inset 0 0 0 1px rgba(45, 45, 42, 0.035);
+  /* 输入框：常态浮在纸上、强调时抬高一档（都是外阴影，颜色用墨色染过，不是纯黑） */
+  --shadow-input: 0 1px 2px rgba(45, 45, 42, 0.05), 0 8px 22px -8px rgba(45, 45, 42, 0.16);
+  --shadow-input-on: 0 2px 5px rgba(45, 45, 42, 0.06), 0 14px 32px -12px rgba(45, 45, 42, 0.24);
+}
+
+/* 纸上的两份物理感：.paper-lift（抬起来的一层）、.paper-press（压下去的凹槽） */
+.paper-lift {
+  box-shadow: var(--shadow-card);
+}
+
+.paper-press {
+  box-shadow: var(--shadow-in);
+}
+
+/* 输入区（2026-10-09 方案 B「浮起卡片」）：底色比纸面更白一档，靠一圈柔和的外阴影
+   浮在纸上；**不画描边**。强调时（聚焦，或框里已有内容）把影子抬高一层，颜色不变。
+   规格：所有控件 36px 高、图标 18px；容器圆角 20px（胶囊级，比全站 4px 卡片大得多，是刻意的，
+   规则见 design-system；里面的圆形按钮同属这一档）。宽度**不在这里设**：外层容器（composer.tsx）
+   和正文列用同一套 `max-w-read + px-10`，输入框填满它 —— 这样卡片外缘正好压在正文文字边缘上
+   （之前输入框自己 max-width + 居中，在宽屏上比正文宽出 35/45px）。
+   注：原来有 `border: 1px solid transparent` 是为了描边不跳，现在不画描边了，去掉边框、
+   上下内边距各 +1px 保持总高不变。 */
+.composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-composer);
+  background: var(--color-input);
+  box-shadow: var(--shadow-input);
+  transition: box-shadow 180ms ease;
+}
+
+/* 强调态 = 影子抬高一层（常态 → 强调）。两个条件都算强调：聚焦时（focus-within），
+   以及框里已经有内容时（:has + :not(:placeholder-shown)）—— 后者是为了
+   「打完字点走之后输入框不会缩回空态的样子」。自始至终不出现任何线条。 */
+.composer-box:focus-within,
+.composer-box:has(textarea:not(:placeholder-shown)) {
+  box-shadow: var(--shadow-input-on);
+}
+
+/* 消息流的上下渐隐：正文滚到标题区（上）和输入区（下）旁边时淡出，而不是被硬生生切断。
+   装在滚动容器上，用 mask 实现 —— 它只影响内容，滚动条和容器外的输入框都不受影响。
+   注意别把它挪到内层的宽度容器上：那样渐隐带会跟着内容列一起收窄。 */
+.msg-stream {
+  --stream-fade: 28px;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--stream-fade),
+    #000 calc(100% - var(--stream-fade)),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 var(--stream-fade),
+    #000 calc(100% - var(--stream-fade)),
+    transparent 100%
+  );
+}
+
+/* 行与行之间统一 2px（工具行的容器自己没有下边距，不补会紧贴下一行） */
+.prose-relay > .fold-toggle,
+.prose-relay > details.group,
+.prose-relay > div.pl-6 {
+  margin-bottom: 2px;
+}
+
+/* 过程区（思考行 / 工具行 / 折叠链）与**正文段落**之间的空隙（2026-10-13 定稿）：
+   - 一串过程行属于**它上面**那段正文（agent 说完一段就动手做），所以贴着上文：4px；
+   - 它下面那段正文是新输出，与过程记录拉开：14px；
+   - 行与行之间一律 2px，不受这两条影响。
+   实现要点：正文那一侧的间距**不再用负补偿**。正文段的下边距是 20px（p / ul / ol），
+   表格与引用是 24px，流式尾巴那段被 stream-tail 规则清零是 0 —— 用「减一个固定值」的算法
+   遇到后两种情况就会算出别的值甚至负值（实测 −12px，正文和工具行压在一起）。
+   现在是先把该块最后一段的下边距清零，再由正文块自己给 margin-bottom（见下面两条）。
+   反面教材：给每一行都设正负补偿会让行间折叠成负值（互相重叠），整块忽紧忽松 ——
+   间距只能作用在贴着正文的那一侧。 */
+/* 正文块与**紧随其后的过程行**：那一串思考 / 工具属于上面这段正文（agent 说完一段就动手做），
+   所以要**贴着上文**（4px）；间距写在这块正文自己的 margin-bottom 上，并先把这块最后一段的
+   下边距清零 —— 这样不管最后一段是 20px（普通段落）、24px（表格 / 引用）、还是 0（流式尾巴那段
+   已被 stream-tail 规则清零），结果都是同一个值。
+   旧写法是「正文块最后一段的 20px 下边距 − 过程行的负补偿」，那个算法遇到下边距不是 20px 的情况
+   就会算出别的值甚至负值（2026-10-13 实测流式那处 −12px，正文和工具行压在一起）。 */
+.prose-relay
+  > div.prose-relay:has(+ .fold-toggle, + details.group, + div.pl-6)
+  > :is(div, .stream-tail)
+  > :last-child {
+  margin-bottom: 0;
+}
+
+.prose-relay > div.prose-relay:has(+ .fold-toggle, + details.group, + div.pl-6) {
+  margin-bottom: 4px;
+}
+
+/* 过程行 → **紧随其后的正文块**：那一段是新一轮输出，与上面的过程记录拉开（14px）。
+   注意链（折叠起来的「思考 N 段 · 工具 N 次」）的这条间距必须**落在整条链之后**（见下面 fold-body 那条），
+   落在标题行 `.fold-toggle` 上会让展开的内容与标题行之间凭空多出 14px —— 用户实测反馈「展开后反而看起来更远」。 */
+.prose-relay > .fold-toggle:has(+ div.prose-relay),
+.prose-relay > details.group:has(+ div.prose-relay),
+.prose-relay > div.pl-6:has(+ div.prose-relay) {
+  margin-bottom: 14px;
+}
+
+/* 链的「与下面正文拉开」写在 fold-body 上（收起时它高度为 0，效果与写在标题行上一样；
+   展开时这段距离才落在整条链尾部，而不是标题和内容之间）。同时把链内最后一行的
+   下边距清零：fold-body 是 BFC（overflow: hidden），子元素的边距不会穿透，不清就会变成 2 + 14px。
+   收起态（JS 把高度写成 0px）时，标题行自己的 2px 与这里的 14px **不会**折叠
+   （折叠要求元素是空的，而 fold-body 里还留着内容）→ 会变成 2 + 14 = 16px，
+   与「没展开过的链」的 14px 不一致，所以收起态把它减成 12px。 */
+.prose-relay > .fold-body:has(+ div.prose-relay) {
+  margin-bottom: 14px;
+}
+
+.prose-relay > .fold-body[style*="0px"]:has(+ div.prose-relay) {
+  margin-bottom: 12px;
+}
+
+.prose-relay > .fold-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* 回形针 / 发送 这类图标按钮的底座：36px 方格，图标居中。
+   注意：这段是**未分层**样式，优先级高于 Tailwind 的 utilities —— 所以圆角和
+   cursor 故意不写在这里（写了会盖掉 rounded-full 和 disabled:cursor-not-allowed），
+   由使用处的类名指定。 */
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 0;
+  transition: background-color 160ms, color 160ms, transform 160ms;
+}
+
+.icon-btn:active {
+  transform: translateY(1px);
+}
+
+/* 全屏纤维层。不用 mix-blend-mode——全屏 multiply 会强制整页合成，
+   渲染明显变慢（实测截图都能卡住）；灰度噪声配 0.16 的不透明度肉眼已经够了。 */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 100;
+  background-image: var(--fiber);
+  opacity: 0.16;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   浏览器表面：Tailwind 的 preflight 会把这几样重置掉，
+   这里按令牌补回来（选区、光标、滚动条、焦点环、减弱动效）。
+   ───────────────────────────────────────────────────────────── */
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-page);
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    font-size: var(--text-ui);
+    line-height: 1.7;
+    font-variant-numeric: lining-nums;
+    caret-color: var(--color-accent-text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a {
+    color: var(--color-accent-text);
+    text-underline-offset: 2px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent-text) 30%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent-text);
+    outline-offset: 2px;
+  }
+
+  /* 滚动条样式统一在文件末尾那一处（标准属性 + ::-webkit-scrollbar 自定义 + 关掉 button），
+     这里不再重复声明。 */
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    .caret,
+    .typing i {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   正文长文排版：模型回答是 markdown 渲染出的 HTML，
+   p/h2/ul/pre/table 这些节点上没有类名可挂，所以这一段留在 CSS 里。
+   数值照搬旧站，保证观感不变（间距、字号、引号样式）。
+   ───────────────────────────────────────────────────────────── */
+@layer components {
+  .prose-relay {
+    font-family: var(--font-read);
+    font-size: var(--text-read);
+    line-height: var(--leading-read);
+    /* 宽度不在这里限：外层内容列（--container-read）就是阅读宽度。
+       这里原先还有一条 max-width: 68ch，那是英文口径 —— 中文 68ch 只有约 34 个字一行，
+       而外层更宽时它会把正文压窄（2026-10-09 用户反馈「一行没多少字就换行」后去掉）。 */
+    overflow-wrap: anywhere;
+  }
+
+  .prose-relay > :first-child,
+  .prose-relay .stream-tail > :first-child {
+    margin-top: 0;
+  }
+
+  .prose-relay .stream-tail > :last-child {
+    margin-bottom: 0;
+  }
+
+  .prose-relay p,
+  .prose-relay ul,
+  .prose-relay ol {
+    margin: 0 0 20px;
+  }
+
+  .prose-relay ul,
+  .prose-relay ol {
+    padding-left: 22px;
+  }
+
+  /* Tailwind 的 preflight 里有一条 `ol,ul,menu{list-style:none}`，把浏览器默认的
+     圆点和编号全清了；本段样式只补了缩进，没补回来，所以列表项前面一直是光秃秃的。
+     这里按常规 Markdown 的层级显式写回：一级实心圆、二级空心圆、三级方块，有序用数字。 */
+  /* 一级用 revert（退回浏览器默认的 disc）：写 `list-style: disc` 会被 Lightning CSS
+     当成「和初始值一样」在压缩时整条削掉（实测产物只剩 `list-style: outside`），
+     一级列表照样没点。revert 是关键字，不会被削。二级/三级/有序不是初始值，照常写。 */
+  .prose-relay ul {
+    list-style: revert;
+  }
+
+  .prose-relay ul ul {
+    list-style: circle;
+  }
+
+  .prose-relay ul ul ul {
+    list-style: square;
+  }
+
+  .prose-relay ol {
+    list-style: decimal;
+  }
+
+  .prose-relay li {
+    margin-bottom: 6px;
+  }
+
+  .prose-relay h1,
+  .prose-relay h2,
+  .prose-relay h3 {
+    font-family: var(--font-title);
+    font-size: 17px;
+    font-weight: 600;
+    margin: 34px 0 12px;
+  }
+
+  .prose-relay strong {
+    font-weight: 600;
+    color: var(--color-ink-strong);
+  }
+
+  .prose-relay code {
+    font-family: var(--font-mono);
+    /* 更纱黑体的拉丁部分比原来那套等宽窄，同字号看起来偏小 → 比换字体前各加 0.5px */
+    font-size: 13.5px;
+    font-variant-ligatures: none; /* 代码里 -> ... 这类连字会把宽度对不上，关掉 */
+    background: var(--color-panel);
+    padding: 2px 6px;
+    border-radius: var(--radius-ctl);
+    color: var(--color-accent-text);
+  }
+
+  .prose-relay pre {
+    background: var(--color-panel);
+    border: 1px solid var(--color-line);
+    border-radius: 6px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0;
+  }
+
+  .prose-relay pre code {
+    background: none;
+    padding: 0;
+    color: var(--color-ink-2);
+    font-size: 14px;
+    font-variant-ligatures: none;
+    line-height: 1.65;
+  }
+
+  .prose-relay table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-bottom: 24px;
+    font-size: 14.5px;
+  }
+
+  .prose-relay th,
+  .prose-relay td {
+    border-bottom: 1px solid var(--color-line);
+    padding: 8px 10px;
+    text-align: left;
+  }
+
+  .prose-relay th {
+    font-family: var(--font-ui);
+    font-size: 12.5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    font-weight: 500;
+  }
+
+  .prose-relay blockquote {
+    margin: 0 0 24px;
+    padding-left: 14px;
+    border-left: 1px solid var(--color-line);
+    color: var(--color-ink-2);
+    font-style: italic;
+  }
+
+  .prose-relay a {
+    color: var(--color-accent-text);
+  }
+
+  .prose-relay hr {
+    border: none;
+    border-top: 1px solid var(--color-line);
+    margin: 32px 0;
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   开了文件预览时的三栏骨架：会话列表 · 对话 · 预览。
+   窄屏（<900px）塞不下第三栏，预览面板改成盖满整屏
+   （见 components/chat/file-preview.tsx）。
+   ───────────────────────────────────────────────────────────── */
+.app-shell[data-preview='1'] {
+  grid-template-columns: 272px minmax(0, 1fr) clamp(320px, 42%, 720px);
+}
+
+@media (max-width: 900px) {
+  .app-shell[data-preview='1'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   图片点击放大：全屏灯箱（components/chat/image-zoom.tsx）
+   浮层淡入、大图从中心轻微放大；图片悬停时右下角浮出放大镜提示。
+   ───────────────────────────────────────────────────────────── */
+@keyframes zoom-fade-in {
+  from { opacity: 0; }
+}
+@keyframes zoom-pop-in {
+  from { opacity: 0; transform: scale(0.94); }
+}
+
+.zoom-layer { animation: zoom-fade-in 0.2s ease-out; }
+.zoom-figure { animation: zoom-pop-in 0.24s cubic-bezier(0.2, 0.8, 0.3, 1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .zoom-layer,
+  .zoom-figure { animation: none; }
+}
+
+.zoom-wrap { position: relative; display: inline-flex; }
+
+.zoom-wrap::after {
+  content: '';
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.55) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><path d='M21 21l-4.3-4.3'/><path d='M11 8v6'/><path d='M8 11h6'/></svg>") center / 15px 15px no-repeat;
+  opacity: 0;
+  transition: opacity 0.18s ease-out;
+  pointer-events: none;
+}
+
+.zoom-wrap:hover::after { opacity: 1; }
+
+
+/* ─────────────────────────────────────────────────────────────
+   动效层（2026-10-08）
+   只面向 Chrome 桌面端，所以敢用 @starting-style、::details-content 这类新特性：
+   它们是「只在元素真正出现/展开时播一次」，已存在的节点不会重播，不干扰流式打字。
+   ───────────────────────────────────────────────────────────── */
+
+/* 1. 换主题：底色与文字平滑过渡，不要瞬间闪一下 */
+html {
+  transition: background-color 0.35s ease, color 0.35s ease;
+}
+
+/* 2. 消息流：新出现的整块淡入 + 轻微上浮（老节点不受影响） */
+/* 滚动条始终预留位置：内容长高时滚动条不会「从无到有」闪现，右侧内容宽度就不会被挤动 */
+.msg-stream {
+  scrollbar-gutter: stable;
+}
+
+.msg-stream > * {
+  transition:
+    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    translate 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@starting-style {
+  .msg-stream > * {
+    opacity: 0;
+    translate: 0 8px;
+  }
+}
+
+/* 2b. 会话菜单打开时，只藏**被点那一行**的时间戳。
+   原因：菜单开着时那个 ⋯ 按钮会一直显示（data-[state=open] 强制可见）并且带底色，
+   它 absolute 定位在行的最右侧、正好压在同一行的时间戳上；而「悬停才藏时间」的规则
+   在鼠标移到菜单上之后就失效了，时间戳会重新冒出来跟按钮叠在一起。
+   下面几行不用管 —— 菜单是浮层，本来就把它们盖住了。 */
+.chat-item:has(button[data-state='open']) span.tabular-nums {
+  opacity: 0;
+}
+
+/* 3. 侧栏按钮：只做底色/文字变化（会话行改成整行高亮，不再左右轻移） */
+aside button {
+  transition:
+    background-color 0.16s ease,
+    color 0.16s ease;
+}
+
+/* 4. 输入框聚焦：边框亮起 + 一圈柔和光晕 */
+textarea {
+  transition: border-color 0.2s ease, box-shadow 0.26s ease;
+}
+/* 输入框聚焦不再画光晕（要求：点进去里外都不要出现线条）。
+   原来这里有一条 `textarea:focus { box-shadow: 0 0 0 3px accent/22% }`。 */
+
+/* 5. 通用按压反馈：按钮按下去沉一下（纯视觉，不影响点击）。
+   2026-10-09：折叠开合仍能看到抖动，按用户要求把这下沉直接改成 0（先排除这个变量）。
+   要恢复就把下面的 `none` 换回 `translateY(1px)`。 */
+button:not(:disabled):active {
+  transform: none;
+}
+
+/* 6. 折叠块（思考 / 工具行 / 折叠行）：高度动画交给 messages.tsx 的 animateFold() 用 JS 驱动。
+   这里只保证两件事：
+   1) 收起时内容**留在渲染树里** —— UA 默认给收起态的 ::details-content 设 content-visibility: hidden，
+      那样高度只能靠 UA 切换，JS 没法平滑驱动（用 :not([open]) 提高特定性才能盖住 UA）；
+   2) 内容容器裁切溢出。
+   为什么不走 CSS 过渡：滚动补偿必须和高度变化在同一帧里一起写，而 CSS 过渡的当前值
+   在 rAF 里读不到（总是慢一帧），靠事后修正会逐帧过冲，整个页面跟着抖。
+   ⚠️ 必须限定在 `.prose-relay` 内：侧栏那些原生 <details>（例如会话下面的「N 个子代理」）
+   完全靠 UA 的收起行为来藏内容，被这条规则波及后会变成「标着收起、内容却一直显示」
+   （2026-10-13 用户报的）。消息区的折叠块不受影响，因为它们另有一层
+   `.fold-body { height: 0; overflow: hidden }` 兜着。 */
+.prose-relay details:not([open])::details-content {
+  content-visibility: visible;
+}
+
+.fold-body {
+  height: 0;
+  overflow: hidden;
+}
+
+/* 7. 滚动条：细、跟主题走、**两端不要箭头**。
+   坑一（Chrome 121+ 起）：元素上只要有标准的 scrollbar-width / scrollbar-color，Chrome 就**完全忽略**
+   ::-webkit-scrollbar 系列，改用系统滚动条 —— 而 Windows 的系统滚动条自带上下箭头按钮。
+   所以这里**不能**再写标准属性，只能走 webkit 伪元素（本机只用 Chrome，Firefox 落到它自己的默认样式）。
+   坑二：自定义模式下 ::-webkit-scrollbar-button 默认存在并且会画出箭头，必须显式 display:none。 */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* 关键：不写这条，Windows 上两端会各长出一个箭头按钮 */
+*::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+  background-clip: content-box;
+}
+
+/* 9. 选中文字用主题色，默认那圈蓝和纸主题不搭 */
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+
+/* 系统里关了动效就全部收手 */
+/* ── 弹出层开合（输入框右下角的「模型 / 思考强度」面板、它左边的小框）──────────────
+   2026-10-13：从「JS 挂载 + rAF + setTimeout 延迟卸载 + scale 缩放」改成纯 CSS。
+   为什么（用户反馈动画卡）：
+   · **只动 opacity 和 translate** —— 这两个走合成层，不触发 layout/paint；
+     不要 scale：几十像素的小面板上肉眼没区别，却会模糊 + 让浏览器重新栅格化。
+   · 入场用 `@starting-style`、离场用 `transition-behavior: allow-discrete` 过渡 display，
+     替掉「rAF 展开 + setTimeout 卸载」——那套会在挂载/卸载那一帧和 React 渲染抢帧。
+     Chrome 117+ 原生支持，本项目只面向 Chrome 桌面端，敢用。
+   · 面板**常驻 DOM**（只切 display），里面那堆节点不会每次打开都重新挂载渲染。
+   时长 140ms / ease-out（用户给的口径：120–150ms）。 */
+.pop-panel {
+  display: none;
+  opacity: 0;
+  translate: 0 4px;
+  transition:
+    opacity 140ms ease-out,
+    translate 140ms ease-out,
+    display 140ms allow-discrete;
+}
+.pop-panel[data-open='true'] {
+  display: block;
+  opacity: 1;
+  translate: 0 0;
+}
+@starting-style {
+  .pop-panel[data-open='true'] {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+
+/* 设置弹层：整屏遮罩 + 居中大面板，同一套纯 CSS 开关（首次打开后常驻 DOM，见 settings-dialog.tsx）。
+   遮罩只淡；面板淡 + 上移 10px（大面板位移给大一点，但**不用 scale**）。 */
+.pop-scrim {
+  display: none;
+  opacity: 0;
+  transition:
+    opacity 150ms ease-out,
+    display 150ms allow-discrete;
+}
+.pop-scrim[data-open='true'] {
+  display: flex;
+  opacity: 1;
+}
+@starting-style {
+  .pop-scrim[data-open='true'] {
+    opacity: 0;
+  }
+}
+.pop-modal {
+  display: none;
+  opacity: 0;
+  translate: 0 10px;
+  transition:
+    opacity 150ms ease-out,
+    translate 150ms ease-out,
+    display 150ms allow-discrete;
+}
+.pop-modal[data-open='true'] {
+  display: flex;
+  opacity: 1;
+  translate: 0 0;
+}
+@starting-style {
+  .pop-modal[data-open='true'] {
+    opacity: 0;
+    translate: 0 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html,
+  .msg-stream > *,
+  aside button,
+  textarea,
+  details,
+  details::details-content,
+  .pop-panel,
+  .pop-scrim,
+  .pop-modal {
+    transition: none !important;
+    animation: none !important;
+  }
+}

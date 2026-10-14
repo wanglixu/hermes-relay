@@ -1,0 +1,12 @@
+node_modules/
+.next/
+out/
+*.log
+*.tsbuildinfo
+.env*
+!.env.example
+
+# 字体文件不进公开仓库（SIL OFL，用 scripts/fetch-fonts.sh 生成；见 design-system/hermes-relay/FONTS.md）
+/fonts/
+/public/fonts/*
+!/public/fonts/LICENSE-*.txt
