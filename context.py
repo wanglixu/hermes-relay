@@ -1,8 +1,8 @@
 """上下文用量 + 技能清单。
 
-上下文用量：Hermes 的库里没有现成的"当前上下文多大"这个数（`messages.token_count`
-全是 0，`session_model_usage` 又是整会话的累计值），所以这里自己估：
-把该会话还活着的消息文本过一遍 Hermes 自己的估算函数，再加上缓存/调用次数这些真实累计值。
+上下文用量：优先调用 Hermes 原生计数函数，校验保存的用量记录是否仍匹配当前历史，
+计入回复用量与后续新增消息估算；记录缺失或失效时退回消息估算。
+缓存命中和调用次数另读库里的累计值（只算主对话、只算当前模型），不作为当前上下文大小。
 
 技能清单：直接扫 ~/.hermes/skills 下的 SKILL.md 头部的 name/description，
 给输入框里的 `/` 菜单用。
@@ -204,12 +204,129 @@ def _rough_tokens(text: str) -> int:
         return int(len(text) / 2.8) + 1
 
 
-def context_stats(session_id: str, model: str = "", provider: str = "") -> dict:
+# ── 窗口：直接问 Hermes 自己 ────────────────────────────────
+_window_cache: dict[tuple, tuple[float, int]] = {}
+WINDOW_CACHE_TTL = 300.0        # 问到的窗口 5 分钟内不重复问（探接口有网络开销）
+WINDOW_CACHE_TTL_EMPTY = 60.0   # 没问到（网络失败等）只记 1 分钟，别把空值钉住
+
+
+def _same_model(a, b) -> bool:
+    """同一个模型：库里的名字可能带渠道前缀（cline-pass/deepseek-v4.1-flash）。"""
+    x, y = str(a or "").strip().lower(), str(b or "").strip().lower()
+    return bool(x) and bool(y) and (x == y or x.split("/")[-1] == y.split("/")[-1])
+
+
+def _relay_entry(model: str, provider: str, base_url: str) -> dict:
+    """页面上添加的那条记录（models.json 的 custom / channels），按「模型 + 接口地址」对。
+
+    同一个模型名在不同中转接口上的窗口可能不同，所以地址也要对上。
+    """
+    if provider and provider != "custom" and not base_url:
+        return {}
+    try:
+        import models as relay_models
+        from agent.agent_init import normalize_route_base_url
+
+        def route(raw) -> str:
+            return normalize_route_base_url(str(raw or ""))
+
+        data = relay_models._load()
+        want = route(base_url)
+        for item in data.get("custom") or []:
+            if str(item.get("model_id") or "") == model and (not want or route(item.get("base_url")) == want):
+                return item
+        for channel in data.get("channels") or []:
+            for item in channel.get("models") or []:
+                if str(item.get("model_id") or "") == model and route(channel.get("base_url")) == want:
+                    return dict(item, base_url=channel.get("base_url"), api_key=channel.get("api_key"))
+    except Exception:
+        pass
+    return {}
+
+
+def _config_stamp() -> tuple:
+    """Hermes 配置文件的指纹（改动时间 + 大小）。
+
+    窗口解析要读配置里钉住的 model_overrides，所以配置一改就得重算：
+    以前只按模型名缓存，改了配置还要等 5 分钟缓存过期才生效。
+    """
+    try:
+        st = CONFIG_FILE.stat()
+        return (int(st.st_mtime), int(st.st_size))
+    except OSError:
+        return (0, 0)
+
+
+def _native_window(model: str, provider: str, base_url: str, api_key: str, cfg: dict) -> int:
+    """Hermes 自己给这个模型算的窗口（命令行 /model 显示的、压缩阈值用的都是它）。
+
+    解析顺序交给 Hermes：配置里钉住的长度（路由变了就丢弃）→ 自定义接口探 /models →
+    持久缓存 → models.dev → 内置模型表 → 兜底值。探接口会阻塞，所以缓存一会儿。
+    """
+    key = (str(model), str(provider or ""), str(base_url or ""), _config_stamp())
+    now = time.time()
+    cached = _window_cache.get(key)
+    if cached and now - cached[0] < (WINDOW_CACHE_TTL if cached[1] else WINDOW_CACHE_TTL_EMPTY):
+        return cached[1]
+    window = 0
+    try:
+        from hermes_cli.model_switch import resolve_display_context_length
+
+        mcfg = cfg.get("model") or {}
+        value = resolve_display_context_length(
+            model, provider or "",
+            base_url=base_url or "", api_key=api_key or "",
+            custom_providers=cfg.get("custom_providers") or [],
+            config_context_length=(mcfg.get("context_length") if isinstance(mcfg, dict) else None),
+            configured_model=str(mcfg.get("default") or ""),
+            configured_provider=str(mcfg.get("provider") or ""),
+            configured_base_url=str(mcfg.get("base_url") or ""),
+        )
+        window = int(value) if value else 0
+    except Exception:
+        window = 0
+    _window_cache[key] = (now, window)
+    return window
+
+
+def context_stats(session_id: str, model: str = "", provider: str = "", base_url: str = "") -> dict:
     cfg = _config()
-    if not model:
-        model = str((cfg.get("model") or {}).get("default") or "")
-    if not provider:
-        provider = str((cfg.get("model") or {}).get("provider") or "")
+
+    # 优先查该会话持久化的真实模型与系统提示词（避免顶部切换模型时误用新模型的窗口套在老会话上）
+    sess_model = ""
+    sess_provider = ""
+    sess_base_url = ""
+    sess_sys_prompt = ""
+    try:
+        conn = _state()
+        s_row = conn.execute(
+            """select s.model, s.billing_provider, s.billing_base_url,
+                      coalesce(s.system_prompt, sp.prompt, '') as full_sys_prompt
+               from sessions s
+               left join system_prompts sp on s.system_prompt_hash = sp.hash
+               where s.id = ?""",
+            (session_id,),
+        ).fetchone()
+        conn.close()
+        if s_row:
+            sess_model = str(s_row["model"] or "").strip()
+            sess_provider = str(s_row["billing_provider"] or "").strip()
+            sess_base_url = str(s_row["billing_base_url"] or "").strip()
+            sess_sys_prompt = str(s_row["full_sys_prompt"] or "").strip()
+    except Exception:
+        pass
+
+    if sess_model:
+        model = sess_model
+        if sess_provider:
+            provider = sess_provider
+        if sess_base_url:
+            base_url = sess_base_url
+    else:
+        if not model:
+            model = str((cfg.get("model") or {}).get("default") or "")
+        if not provider:
+            provider = str((cfg.get("model") or {}).get("provider") or "")
 
     # 1) 还活着的消息估个 token 数（含思考，含工具结果）
     used = 0
@@ -233,111 +350,92 @@ def context_stats(session_id: str, model: str = "", provider: str = "") -> dict:
     except Exception:
         pass
 
-    # 1b) Hermes 自己存着「最近一次真正发出去的 prompt token 数」——会话行 model_config 里的
-    #     _usage_anchor，它判断该不该压缩用的就是这个数。有就用它：比按消息文本估的准，
-    #     也保证面板的百分比和「会不会触发压缩」是同一个口径。锚点缺失（新会话、刚压缩完）
-    #     才退回上面那条估算。
+    # 1b) 调用原生方法校验用量记录与历史是否匹配。
+    #     缺失或失效时补全系统提示词和工具定义进行完整请求估算，避免口径断崖式暴跌 2~3 万。
     used_source = "estimate"
     try:
-        conn = _state()
-        row = conn.execute("select model_config from sessions where id=?", (session_id,)).fetchone()
-        conn.close()
-        raw = row[0] if row else None
-        if isinstance(raw, (bytes, bytearray)):
-            raw = raw.decode("utf-8", "replace")
-        anchor = (json.loads(raw) or {}).get("_usage_anchor") if raw else None
-        aprompt = 0
-        if isinstance(anchor, dict):
-            aprompt = int(anchor.get("prompt_tokens") or 0)
-        if aprompt > 0:
-            used = aprompt
+        import sessions
+        from agent.usage_anchor import persisted_anchor_tokens
+        from agent.model_metadata import estimate_request_tokens_rough
+        import agent_bridge
+
+        # Use the same persisted message shape as the agent, including tool IDs.
+        messages = sessions.history(session_id)
+        alive = len(messages)
+        anchored = persisted_anchor_tokens(sessions.db(), session_id, messages)
+        if anchored is not None:
+            used = anchored
             used_source = "anchor"
+        else:
+            tools = agent_bridge.get_cached_tools()
+            used = estimate_request_tokens_rough(messages, system_prompt=sess_sys_prompt, tools=tools)
     except Exception:
         pass
 
-    # 2) 缓存/调用这些只认库里的真实累计
-    calls = cache_read = cache_write = in_tok = out_tok = 0
+    # 2) 缓存/调用这些只认 Hermes 库里的真实累计。
+    #    口径与 Hermes 状态栏一致：只算主对话（task=''）。
+    calls = in_tok = out_tok = 0
+    cache_read = cache_write = 0
+    cache_scope = ""
+    cache_other_models: list[str] = []
+    hit_rate: float | None = None
     try:
         conn = _state()
-        row = conn.execute(
-            # 只算主对话那一行（task=''）：起标题、背景回顾、压缩、识图这些后台调用
-            # 不吃前缀缓存，混进来会把命中率压低（本机实测差 1.8 个百分点），
-            # 而 Hermes 命令行状态栏的口径也只算主对话。
-            "select sum(api_call_count) c, sum(input_tokens) i, sum(output_tokens) o, "
+        rows = conn.execute(
+            "select model, billing_provider, sum(api_call_count) c, sum(input_tokens) i, sum(output_tokens) o, "
             "sum(cache_read_tokens) cr, sum(cache_write_tokens) cw "
-            "from session_model_usage where session_id=? and task=''",
+            "from session_model_usage where session_id=? and task='' group by model, billing_provider",
             (session_id,),
-        ).fetchone()
-        if row:
-            calls = int(row["c"] or 0)
-            in_tok = int(row["i"] or 0)
-            out_tok = int(row["o"] or 0)
-            cache_read = int(row["cr"] or 0)
-            cache_write = int(row["cw"] or 0)
+        ).fetchall()
         conn.close()
+
+        mine = [r for r in rows if _same_model(r["model"], model)]
+        picked = mine or list(rows)
+        cache_scope = "model" if mine else ("session" if rows else "")
+        if mine:
+            cache_other_models = list({str(r["model"]) for r in rows if not _same_model(r["model"], model)})
+
+        calls = sum(int(r["c"] or 0) for r in picked)
+        in_tok = sum(int(r["i"] or 0) for r in picked)
+        out_tok = sum(int(r["o"] or 0) for r in picked)
+        cache_read = sum(int(r["cr"] or 0) for r in picked)
+        cache_write = sum(int(r["cw"] or 0) for r in picked)
+
+        # 缓存命中率：只统计报告了缓存字段的行（cr > 0 或 cw > 0），避免不支持缓存的渠道虚增分母
+        # 公式对齐 Hermes 原生：cache_read / prompt_total，其中 prompt_total = input_tokens + cache_read + cache_write
+        eligible = [r for r in picked if (int(r["cr"] or 0) > 0 or int(r["cw"] or 0) > 0)]
+        if eligible:
+            e_in = sum(int(r["i"] or 0) for r in eligible)
+            e_cr = sum(int(r["cr"] or 0) for r in eligible)
+            e_cw = sum(int(r["cw"] or 0) for r in eligible)
+            prompt_total = e_in + e_cr + e_cw
+            # 对齐 Hermes 原生准则：A zero-read regime hides the segment (no data != an alarming 0%)
+            # 只有当 cache_read > 0 时才计算并给出百分比，否则保持 None
+            if prompt_total > 0 and e_cr > 0:
+                hit_rate = e_cr / prompt_total
     except Exception:
         pass
 
-    # 3) 窗口：全局配置 → 渠道模型自己的声明 → 页面上添加时查到的长度 → Hermes 里同名的模型。
-    #    查不到就保持 0，前端不显示百分比，也不拿默认值凑。
+    # 3) 窗口：页面上手填的 > Hermes 自己算的。查不到就保持 0，前端说「窗口未知」。
     window = 0
     window_source = ""
-    mcfg = cfg.get("model") or {}
-    if mcfg.get("context_length"):
-        window = int(mcfg["context_length"])
-        window_source = "config"
-    prov = (cfg.get("providers") or {}).get(provider) or {}
-    pmodel = ((prov.get("models") or {}).get(model) or {})
-    if not window and isinstance(pmodel, dict) and pmodel.get("context_length"):
-        window = int(pmodel["context_length"])
-        window_source = "provider"
+    entry = _relay_entry(model, provider, base_url)
+    api_key = str(entry.get("api_key") or "")
+    entry_ctx = entry.get("context_length")
+    if isinstance(entry_ctx, int) and entry_ctx > 0:
+        window = entry_ctx
+        window_source = "manual"
     if not window:
-        try:
-            import models as relay_models
-            for item in (relay_models._load().get("custom") or []):
-                if str(item.get("model_id") or "") == model:
-                    ctx = item.get("context_length")
-                    if isinstance(ctx, int) and ctx > 0:
-                        window = ctx
-                        window_source = "custom"
-                    break
-        except Exception:
-            pass
-    if not window:
-        # 页面上自己加的端点多半不报窗口（中转接口的通病），但 Hermes 配置里可能配着同一个模型
-        # （页面上的 deepseek-v4.1-flash 与 cline-pass/deepseek-v4.1-flash 就是同一个）。
-        # 按「去掉渠道前缀的模型名」找同名声明，找到就借用它的窗口 —— 总比分母是 0 强。
-        bare = str(model).split("/")[-1]
-        for _pid, _p in (cfg.get("providers") or {}).items():
-            for _mid, _m in (((_p or {}).get("models")) or {}).items():
-                if not isinstance(_m, dict) or not _m.get("context_length"):
-                    continue
-                if str(_mid) == str(model) or str(_mid).split("/")[-1] == bare:
-                    window = int(_m["context_length"])
-                    window_source = "same-name"
-                    break
-            if window:
-                break
+        if not api_key:
+            api_key = str((((cfg.get("providers") or {}).get(provider) or {}).get("api_key")) or "")
+        native = _native_window(model, provider, base_url, api_key, cfg)
+        if native:
+            window = native
+            window_source = "native"
     comp = cfg.get("compression") or {}
     threshold = float(comp.get("threshold") or 0.5)
     enabled = bool(comp.get("enabled", True))
 
-    # 逐轮实测：Hermes 每轮当场报的计数（只覆盖加了埋点之后跑的轮次）。
-    # 主数字仍用库里的全历史累计，这一份用来对账、并分辨「上游没返回缓存字段」。
-    turn_stats = {"turns": 0, "cache_read": 0, "cache_write": 0, "prompt_total": 0,
-                  "hit_rate": 0.0, "reported": False}
-    try:
-        import sessions as _sessions
-
-        turn_stats = _sessions.turn_cache_stats(session_id)
-    except Exception:
-        pass
-
-    # 口径与 Hermes 自己的状态栏一致：命中 ÷（未命中输入 + 命中 + 写入）。
-    # 前一项是「没吃到缓存的输入」，后两项是「吃到缓存的」和「这轮写进缓存的」，
-    # 三项相加才是这次请求真正发出去的输入总量（Hermes 存库前已把缓存部分从 input 里扣掉）。
-    denom = cache_read + cache_write + in_tok
-    hit_rate = (cache_read / denom) if denom else 0.0
     pct = (used / window * 100) if window else 0.0
     return {
         "model": model,
@@ -355,6 +453,8 @@ def context_stats(session_id: str, model: str = "", provider: str = "") -> dict:
         "output_tokens": out_tok,
         "cache_read": cache_read,
         "cache_write": cache_write,
-        "cache_hit_rate": round(hit_rate, 4),
-        "turn_stats": turn_stats,
+        "cache_hit_rate": round(hit_rate, 4) if hit_rate is not None else None,
+        "cache_scope": cache_scope,
+        "cache_other_models": cache_other_models,
+        "turn_stats": {"turns": 0, "cache_read": 0, "cache_write": 0, "prompt_total": 0, "hit_rate": 0.0, "reported": False},
     }

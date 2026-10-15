@@ -392,6 +392,11 @@ def record_ttft(session_id: str, ttft: float, dur: float | None = None,
             _v = cache.get(_k)
             if isinstance(_v, int):
                 row[_k] = _v
+        # 记下这一轮用的是哪个模型：命中率只按当前模型算（Hermes 换模型会重置缓存基线），
+        # 汇总时得能挑出来。
+        _model = cache.get("model")
+        if isinstance(_model, str) and _model:
+            row["model"] = _model
     def _is_same(e: dict) -> bool:
         """同一条提问的旧记录：有时间戳的按时间戳比，没有的退回比序号。"""
         if key_ts > 0 and e.get("user_ts") is not None:
@@ -414,7 +419,13 @@ def record_ttft(session_id: str, ttft: float, dur: float | None = None,
     return key_ts or float(idx)
 
 
-def turn_cache_stats(session_id: str) -> dict:
+def _same_model_name(a, b) -> bool:
+    """同一个模型：名字可能带渠道前缀（cline-pass/deepseek-v4.1-flash）。"""
+    x, y = str(a or "").strip().lower(), str(b or "").strip().lower()
+    return bool(x) and bool(y) and (x == y or x.split("/")[-1] == y.split("/")[-1])
+
+
+def turn_cache_stats(session_id: str, model: str = "") -> dict:
     """汇总这个会话里「Hermes 当场报的」缓存计数（只覆盖加了埋点之后跑的轮次）。
 
     和 session_model_usage 那张表的区别：那张表是 Hermes 每轮写进库的账
@@ -426,7 +437,12 @@ def turn_cache_stats(session_id: str) -> dict:
     cr = cw = pt = 0
     turns = 0
     reported = False
-    for e in _load_metrics().get(session_id) or []:
+    entries = [e for e in (_load_metrics().get(session_id) or []) if isinstance(e, dict)]
+    # 只看当前模型的轮次：换了模型，前面那些轮（很可能来自不报缓存的接口）会把命中率拖到 0。
+    # 老记录里没有模型字段，那就退回全部，别把已有数据藏起来。
+    if model and any(e.get("model") for e in entries):
+        entries = [e for e in entries if _same_model_name(e.get("model"), model)]
+    for e in entries:
         if not isinstance(e, dict):
             continue
         _cr, _pt = e.get("cache_read"), e.get("prompt_total")

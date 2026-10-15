@@ -6,7 +6,7 @@ import { NextResponse } from 'next/server'
 // （后端只在这轮对话之间才能重启，前端随时可以重建）。
 export const dynamic = 'force-dynamic'
 
-// 只允许读这几棵树下的文件。前提：这台服务只有你自己能访问（只监听回环，或前面有登录网关）。
+// 只允许读这几棵树下的文件。这台机器外面有 site-auth 登录网关，只有主人进得来。
 const ALLOWED_ROOTS = ['/root', '/tmp', '/opt', '/srv', '/var/log', '/home', '/etc']
 
 // 密钥类一律不给看。

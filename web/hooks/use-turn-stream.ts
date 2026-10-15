@@ -14,10 +14,70 @@ import {
   type TurnEvent,
 } from '@/lib/api'
 
-export type Approval = { request_id: string; command: string; description: string }
+export type Approval = {
+  request_id: string
+  command: string
+  description: string
+  /** Hermes 给这一步的时限（approvals.timeout，默认 300 秒） */
+  timeout_sec?: number
+  /** 绝对到期时刻（epoch 秒）；有它倒计时才算得准 */
+  deadline?: number
+}
 export type Stream = { items: Part[]; approval: Approval | null; clarify: Clarify | null }
 
 const EMPTY_STREAM: Stream = { items: [], approval: null, clarify: null }
+
+// ── 标签页提醒 ──
+// 有卡片在等你、或一轮刚跑完，而你正看着别的标签页时：标题和站点图标一起闪，切回来就停。
+// 只改标题太容易被忽略（标签文字本来就小），所以再叠一个亮红圆图标；300ms 一次（用户实测 450ms 还不够明显）。
+const ALERT_ICON = (() => {
+  if (typeof document === 'undefined') return ''
+  const c = document.createElement('canvas')
+  c.width = c.height = 64
+  const g = c.getContext('2d')
+  if (!g) return ''
+  g.fillStyle = '#e5341f'
+  g.beginPath()
+  g.arc(32, 32, 30, 0, Math.PI * 2)
+  g.fill()
+  return c.toDataURL('image/png')
+})()
+
+let blinkTimer: number | null = null
+let blinkText = '回复完成'
+
+function setFavicon(href: string) {
+  let link = document.querySelector<HTMLLinkElement>("link[rel='icon']")
+  if (!link) {
+    link = document.createElement('link')
+    link.rel = 'icon'
+    document.head.appendChild(link)
+  }
+  link.href = href
+}
+
+function stopBlink() {
+  if (blinkTimer === null) return
+  window.clearInterval(blinkTimer)
+  blinkTimer = null
+  document.title = 'Hermes Relay'
+  setFavicon('/favicon.svg')
+}
+
+/** 把标签页闪起来；msg 是闪动时标题里那句短话 */
+function startBlink(msg = '回复完成') {
+  blinkText = msg
+  if (blinkTimer !== null) return
+  let on = false
+  const tick = () => {
+    on = !on
+    document.title = on ? `● ${blinkText}` : 'Hermes Relay'
+    setFavicon(on ? ALERT_ICON : '/favicon.svg')
+  }
+  tick()
+  blinkTimer = window.setInterval(tick, 300)
+  window.addEventListener('focus', stopBlink, { once: true })
+}
 
 /** 一段窗口 = 一次 API 调用里「从第一个字到最后一个字」；跨段之间是首字等待或跑工具，不算 */
 type GenMeter = {
@@ -88,23 +148,15 @@ export function useTurnStream(opts: {
   const currentRef = useRef<string | null>(null)
   currentRef.current = current
 
-  // ── 一轮跑完时如果你正看着别的标签页，就把这个标签的标题闪起来；切回来就停 ──
-  const blinkTimer = useRef<number | null>(null)
-  const stopBlink = () => {
-    if (blinkTimer.current === null) return
-    window.clearInterval(blinkTimer.current)
-    blinkTimer.current = null
-    document.title = 'Hermes Relay'
-  }
-  const startBlink = () => {
-    if (blinkTimer.current !== null) return
-    let on = false
-    blinkTimer.current = window.setInterval(() => {
-      on = !on
-      document.title = on ? '● 回复完成' : 'Hermes Relay'
-    }, 700)
-    window.addEventListener('focus', stopBlink, { once: true })
-  }
+  // ── 弹出审批卡 / 选项卡时，人若在别的标签页，也把标签闪起来（一轮跑完同理由 hook 尾部触发） ──
+  const asking = !!stream?.approval || !!stream?.clarify
+  const wasAsking = useRef(false)
+  useEffect(() => {
+    if (asking && !wasAsking.current && document.hidden) {
+      startBlink(stream?.approval ? '有一件事要你点头' : '有一题要你回答')
+    }
+    wasAsking.current = asking
+  }, [asking])
 
   useEffect(() => {
     const onVis = () => {

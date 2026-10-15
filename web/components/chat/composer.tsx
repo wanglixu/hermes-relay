@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { api, type Attachment, type ContextStats, type ModelsPayload, type Skill } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { zoomImage } from './image-zoom'
 import { ModelPicker } from './model-picker'
 
 /** 待发附件。url 是预览地址；path 由上传结果填回来（刷新后靠它把图找回来）。 */
@@ -17,6 +18,8 @@ type Pending = {
   name: string
   mime: string
   url: string
+  /** 本地 blob 地址：上传完 url 会换成服务端地址，预览仍旧用这个（点开瞬时出图，不用回后端拿） */
+  localUrl?: string
   path?: string
   ready?: Promise<string>
 }
@@ -166,11 +169,18 @@ function ContextRing({
         <div>
           {fmt(stats.used)} / {fmt(stats.window)} tokens
           <span className="text-muted">
-            （{stats.used_source === 'anchor' ? '最近一次调用实测' : `按当前 ${stats.messages} 条消息估算`}）
+            （{stats.used_source === 'anchor'
+              ? 'Hermes 记的上次请求用量 + 之后新增消息'
+              : `按当前 ${stats.messages} 条消息估算`}）
           </span>
         </div>
-        {stats.window > 0 && stats.window_source === 'same-name' && (
-          <div className="text-muted">窗口按 Hermes 里同名的模型取 —— 这个端点自己不报窗口大小</div>
+        {stats.window > 0 && stats.window_source === 'manual' && (
+          <div className="text-muted">窗口是你添加这个模型时填的那个</div>
+        )}
+        {stats.window > 0 && stats.window_source === 'native' && (
+          <div className="text-muted">
+            窗口按 Hermes 自己的解析取 —— 跟它实际压缩用的、命令行 /model 显示的是同一个数
+          </div>
         )}
         {stats.window === 0 && (
           <div className="text-muted">
@@ -183,14 +193,16 @@ function ContextRing({
           </div>
         )}
         <div>
-          缓存命中 {(stats.cache_hit_rate * 100).toFixed(0)}%（读取 {fmt(stats.cache_read)} ／ 写入{' '}
-          {fmt(stats.cache_write)}）
+          缓存命中{' '}
+          {stats.cache_hit_rate === null
+            ? '无数据（上游没返回缓存字段）'
+            : `${(stats.cache_hit_rate * 100).toFixed(0)}%`}
+          （读取 {fmt(stats.cache_read)} ／ 写入 {fmt(stats.cache_write)}）
         </div>
-        {stats.turn_stats && stats.turn_stats.turns > 0 ? (
+        {stats.cache_scope === 'model' && (stats.cache_other_models?.length ?? 0) > 0 ? (
           <div className="text-muted">
-            最近 {stats.turn_stats.turns} 轮 Hermes 当场计数{' '}
-            {Math.round(stats.turn_stats.hit_rate * 100)}%
-            {stats.turn_stats.reported ? '' : '（上游没返回缓存字段）'}
+            只算 {stats.model}；本会话还用过 {stats.cache_other_models?.join('、')}
+            ，换模型后缓存要重新积累
           </div>
         ) : null}
         <div className="text-muted">
@@ -265,12 +277,16 @@ export function Composer({
     saveDraft(storageKey, text, files)
   }, [storageKey, text, files])
 
+  const [multiline, setMultiline] = useState(false)
+
   // 输入框跟着内容长，最高 40vh
   useEffect(() => {
     const ta = taRef.current
     if (!ta) return
     ta.style.height = 'auto'
-    ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.4) + 'px'
+    const h = Math.min(ta.scrollHeight, window.innerHeight * 0.4)
+    ta.style.height = h + 'px'
+    setMultiline(h > 42 || text.includes('\n'))
   }, [text])
 
   /** 光标前刚打的那个 /词 —— 就是技能菜单的触发条件 */
@@ -328,7 +344,8 @@ export function Composer({
     const next: Pending[] = []
     for (const f of Array.from(list)) {
       // 图片和非图片都收：图片走多模态直接给模型看；非图片只把服务端路径写进正文，让 agent 自己去读
-      const item: Pending = { name: f.name, mime: f.type, url: URL.createObjectURL(f) }
+      const local = URL.createObjectURL(f)
+      const item: Pending = { name: f.name, mime: f.type, url: local, localUrl: local }
       // 选/贴进来就立刻上传：这样刷新页面之后还能靠服务端的文件把图找回来
       item.ready = api
         .upload(uploadDir(sessionId), f)
@@ -450,11 +467,20 @@ export function Composer({
           {files.map((f, i) =>
             f.mime.startsWith('image/') ? (
               <div className="relative size-[62px]" key={i}>
-                <img
-                  src={f.url}
-                  alt={f.name}
-                  className="size-full rounded-ctl border border-line object-cover"
-                />
+                {/* 还没发出去也能点开看大图，跟正文里的图共用同一个灯箱 */}
+                <button
+                  type="button"
+                  onClick={() => zoomImage(f.localUrl ?? f.url)}
+                  aria-label={`预览 ${f.name}`}
+                  title="点开看大图"
+                  className="block size-full cursor-zoom-in border-0 bg-transparent p-0"
+                >
+                  <img
+                    src={f.localUrl ?? f.url}
+                    alt={f.name}
+                    className="size-full rounded-ctl border border-line object-cover"
+                  />
+                </button>
                 <button
                   className="absolute -top-2 -right-2 size-5 justify-center rounded-full border border-line bg-panel p-0 text-muted hover:text-ink"
                   aria-label={`移除 ${f.name}`}
@@ -514,7 +540,7 @@ export function Composer({
           ))}
         </div>
       )}
-      <div className="composer-box">
+      <div className={cn('composer-box', multiline && 'composer-box-multiline')}>
         <button
           className="icon-btn cursor-pointer rounded-full bg-raised text-ink-2 transition-colors hover:bg-line hover:text-ink"
           aria-label="添加图片"
@@ -628,14 +654,16 @@ export function Composer({
           {context ? (
             <span
               title={
-                `缓存命中率：读 ${context.cache_read.toLocaleString()} ／ 写 ${context.cache_write.toLocaleString()} tokens；本会话累计 ${context.calls} 次调用` +
-                (context.turn_stats && context.turn_stats.turns > 0
-                  ? `\n最近 ${context.turn_stats.turns} 轮 Hermes 当场计数：${Math.round(context.turn_stats.hit_rate * 100)}%` +
-                    (context.turn_stats.reported ? '' : '（上游没返回缓存字段）')
+                (context.cache_hit_rate === null
+                  ? `缓存：上游没返回缓存字段，命中率算不出来；读 ${context.cache_read.toLocaleString()} ／ 写 ${context.cache_write.toLocaleString()} tokens`
+                  : `缓存命中率：读 ${context.cache_read.toLocaleString()} ／ 写 ${context.cache_write.toLocaleString()} tokens`) +
+                `；本会话累计 ${context.calls} 次调用` +
+                (context.cache_scope === 'model' && context.cache_other_models?.length
+                  ? `\n只算 ${context.model}（本会话还用过 ${context.cache_other_models.join('、')}）`
                   : '')
               }
             >
-              缓存命中 {Math.round(context.cache_hit_rate * 100)}%
+              缓存命中 {context.cache_hit_rate === null ? '无数据' : `${Math.round(context.cache_hit_rate * 100)}%`}
             </span>
           ) : null}
           {compress?.msg ? (

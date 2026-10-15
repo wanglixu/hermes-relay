@@ -493,17 +493,17 @@ export function ModelPicker({
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="选择渠道 / 模型 / 思考强度（只影响这个网页）"
-        className="inline-flex max-w-[380px] cursor-pointer items-center gap-[5px] border-0 bg-transparent py-0.5 pr-0.5 pl-1.5 font-ui text-[12.5px] text-muted transition-colors hover:text-ink"
+        className="inline-flex max-w-[380px] cursor-pointer items-center gap-[5px] rounded-full border border-line-strong/60 bg-panel/75 px-2.5 py-[3px] font-ui text-[12px] text-muted shadow-[0_1px_2px_rgba(45,45,42,0.04)] transition-all hover:border-accent/40 hover:bg-raised hover:text-ink hover:shadow-[0_2px_4px_rgba(45,45,42,0.06)] active:scale-[0.99]"
       >
         {channelLabel ? (
           <>
-            <span className="min-w-0 truncate font-mono text-[12px] text-faint">{channelLabel}</span>
+            <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2/75">{channelLabel}</span>
             <span className="flex-none text-line-strong">·</span>
           </>
         ) : null}
-        <span className="min-w-0 truncate">{modelLabel}</span>
+        <span className="min-w-0 truncate font-medium text-ink-2">{modelLabel}</span>
         <span className="flex-none text-line-strong">·</span>
-        <span className="flex-none text-ink-2">{effortLabel}</span>
+        <span className="flex-none font-medium text-accent-text">{effortLabel}</span>
         <Chevron />
       </button>
 
@@ -568,16 +568,36 @@ export function ModelPicker({
 
           {view === 'add' && (
             <div className="p-3">
+              {/* 返回按钮 + 顶部标题 */}
+              <div className="mb-2.5 flex items-center justify-between border-b border-line pb-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setView('list')
+                    setNote('')
+                    setTest(null)
+                    setChanTest(null)
+                  }}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-ctl px-1.5 py-0.5 font-ui text-[12px] text-muted transition-colors hover:bg-raised hover:text-ink active:scale-[0.98]"
+                >
+                  <Chevron dir="left" />
+                  <span>返回渠道列表</span>
+                </button>
+                <span className="font-ui text-[12px] font-medium text-ink-2">添加</span>
+              </div>
+
               {/* 两个页签：整条渠道（默认）/ 单个模型（接口不给模型清单时兜底） */}
-              <div className="mb-2 flex items-center gap-1">
+              <div className="mb-2.5 flex items-center gap-1 rounded-lg border border-line bg-panel p-0.5">
                 {([['channel', '添加渠道'], ['single', '单个模型']] as const).map(([k, label]) => (
                   <button
                     key={k}
                     type="button"
                     onClick={() => switchTab(k)}
                     className={cn(
-                      'cursor-pointer rounded-ctl px-2 py-[3px] font-ui text-[12px] transition-colors',
-                      addTab === k ? 'bg-accent text-on-accent' : 'text-muted hover:text-ink',
+                      'flex-1 cursor-pointer rounded-md py-1 text-center font-ui text-[12px] transition-all',
+                      addTab === k
+                        ? 'bg-page font-medium text-ink shadow-[0_1px_2px_rgba(45,45,42,0.06)]'
+                        : 'text-muted hover:text-ink',
                     )}
                   >
                     {label}
@@ -587,11 +607,8 @@ export function ModelPicker({
 
               {addTab === 'channel' ? (
                 <>
-                  <div className="mb-2.5 text-[11.5px] leading-[1.5] text-muted">
-                    填接口地址和密钥；测试通了就保存，这个接口下的模型会一次全收进来，不用一个个挑。
-                  </div>
                   <label className="mb-1 block text-[11.5px] text-muted">
-                    渠道名称 <span className="text-faint">· 可以留空，留空就用域名</span>
+                    渠道名称 <span className="text-faint">· 留空用域名</span>
                   </label>
                   <input className={inputCls} value={fName} onChange={(e) => setFName(e.target.value)} placeholder="打野" />
                   <label className="mt-2.5 mb-1 block text-[11.5px] text-muted">接口地址</label>
@@ -620,7 +637,7 @@ export function ModelPicker({
                   ) : null}
                   {chanTest?.models && chanTest.models.length > 0 ? (
                     <div className="mt-2">
-                      <div className="mb-1 text-[11.5px] text-faint">这个接口的 {chanTest.models.length} 个模型（保存后全部可选）</div>
+                      <div className="mb-1 text-[11.5px] text-faint">这个接口的 {chanTest.models.length} 个模型</div>
                       <div className="flex max-h-[150px] flex-col gap-px overflow-y-auto">
                         {chanTest.models.map((id) => (
                           <div key={id} className="px-1.5 py-[3px] font-mono text-[12px] leading-[1.5] text-ink-2">
@@ -749,7 +766,6 @@ export function ModelPicker({
                   {note}
                 </div>
               ) : null}
-              <div className="mt-1.5 text-[11.5px] text-faint">密钥只写进 relay 自己的配置文件，不进代码仓库。</div>
             </div>
           )}
         </div>
@@ -791,7 +807,7 @@ export function ModelPicker({
                         sub={subChannel?.label && m.model_id.startsWith(`${subChannel.label}/`) ? m.model_id.slice(subChannel.label.length + 1) : m.model_id}
                       />
                       {m.key === current.key ? <Tick /> : null}
-                      {m.source === 'custom' && !m.channel_id && (
+                      {(m.source === 'custom' || !!m.channel_id) && m.key !== current.key && (
                         <span
                           role="button"
                           tabIndex={-1}

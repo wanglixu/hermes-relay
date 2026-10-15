@@ -12,10 +12,12 @@
 
 import http.client
 import http.server
+import os
 import sys
 
-BACKEND = ('127.0.0.1', 8788)
-FRONT = ('127.0.0.1', 3220)
+# 端口可用环境变量换：验证改动时可以把它指到临时后端上，不碰线上那个。
+BACKEND = ('127.0.0.1', int(os.environ.get('RELAY_BACKEND_PORT', '8788')))
+FRONT = ('127.0.0.1', int(os.environ.get('RELAY_FRONT_PORT', '3220')))
 HOP_BY_HOP = {'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
               'te', 'trailers', 'transfer-encoding', 'upgrade', 'host', 'content-length'}
 

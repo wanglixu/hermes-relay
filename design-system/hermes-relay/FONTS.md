@@ -1,4 +1,4 @@
-# 字体（relay.example.com）
+# 字体（自托管）
 
 **2026-10-09 起：整站统一黑体，三套字体全部自托管，不走 Google Fonts。**
 字体文件不进 git（都是 SIL OFL 许可，可自由再分发，但体积大），用 `web/scripts/fetch-fonts.sh` 生成。
@@ -62,7 +62,7 @@ Sarasa 只留常用汉字（`--autoSubset`，生僻字回落 Noto，等宽对齐
 ## 重新生成
 
 ```bash
-cd /opt/hermes-relay/web
+cd web
 bash scripts/fetch-fonts.sh          # 约 15 分钟；依赖 curl / tar / 7z / node / python3
 bash scripts/dev-restart.sh          # 构建 + 重启（缺字体时它会自动先跑 fetch-fonts.sh）
 ```

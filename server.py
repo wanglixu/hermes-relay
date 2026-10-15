@@ -30,6 +30,7 @@ import compress  # noqa: E402
 import context as chat_context  # noqa: E402
 import models  # noqa: E402
 import sessions  # noqa: E402
+import workbench_api  # noqa: E402
 
 STATIC_DIR = Path(os.environ.get("HERMES_RELAY_STATIC", ROOT / "static")).expanduser()
 UPLOAD_DIR = Path(os.environ.get("HERMES_RELAY_UPLOADS", "~/.hermes/hermes-relay/uploads")).expanduser()
@@ -171,10 +172,11 @@ class Handler(BaseHTTPRequestHandler):
         if parts == ["skills"]:
             return _json(self, {"skills": chat_context.list_skills()})
         if len(parts) == 3 and parts[0] == "chats" and parts[2] == "context":
-            # 用量按页面上正在用的模型算，不按 config.yaml 里的默认模型
+            # 优先按该会话库里记录的实际模型算，新会话或无记录才退回当前页面选中的模型
             rt = models.active_runtime()
             return _json(self, chat_context.context_stats(
                 parts[1], model=str(rt.get("model") or ""), provider=str(rt.get("provider") or ""),
+                base_url=str(rt.get("base_url") or ""),
             ))
         if parts == ["models"]:
             try:
@@ -248,6 +250,24 @@ class Handler(BaseHTTPRequestHandler):
             # 有一轮还在跑？前端据此决定要不要接上（不用另外发一次请求问）
             chat["live"] = agent_bridge.is_live(parts[1])
             return _json(self, chat)
+        if parts == ["kanban", "tasks"]:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            status = (q.get("status") or [None])[0]
+            return _json(self, {"tasks": workbench_api.list_kanban_tasks(status)})
+        if parts == ["cron", "jobs"]:
+            return _json(self, {"jobs": workbench_api.list_cron_jobs()})
+        if parts == ["system", "processes"]:
+            return _json(self, workbench_api.get_system_processes())
+        if parts == ["system", "logs"]:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            fname = (q.get("file") or ["agent.log"])[0]
+            try:
+                lines = int((q.get("lines") or ["150"])[0])
+            except ValueError:
+                lines = 150
+            return _json(self, workbench_api.get_system_logs(fname, lines))
+        if parts == ["artifacts", "files"]:
+            return _json(self, {"files": workbench_api.list_artifact_files()})
         return _json(self, {"error": "not found"}, 404)
 
     # ── POST ────────────────────────────────────────────────
@@ -385,6 +405,18 @@ class Handler(BaseHTTPRequestHandler):
                 return _json(self, {"resolved": bool(ok)})
             if parts[1:] == ["upload"]:
                 return self._upload()
+            if parts[1:] == ["kanban", "tasks"]:
+                body = self._json_body()
+                task = workbench_api.create_kanban_task(body)
+                return _json(self, {"ok": True, "task": task})
+            if parts[1:] == ["cron", "toggle"]:
+                body = self._json_body()
+                ok = workbench_api.toggle_cron_job(body.get("id"), bool(body.get("enabled")))
+                return _json(self, {"ok": ok})
+            if parts[1:] == ["cron", "run"]:
+                body = self._json_body()
+                res = workbench_api.run_cron_job_now(body.get("id"))
+                return _json(self, res)
         except _HttpError as exc:
             return _json(self, {"error": exc.message}, exc.status)
         except Exception as exc:
@@ -407,6 +439,10 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     return _json(self, {"error": str(exc)}, 400)
                 return _json(self, {"ok": True})
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "kanban" and parts[2] == "tasks":
+                body = self._json_body()
+                task = workbench_api.update_kanban_task(parts[3], body)
+                return _json(self, {"ok": bool(task), "task": task})
         except _HttpError as exc:
             return _json(self, {"error": exc.message}, exc.status)
         except Exception as exc:
@@ -427,6 +463,9 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as exc:
                     return _json(self, {"error": str(exc)}, 400)
                 return _json(self, {"ok": True})
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "kanban" and parts[2] == "tasks":
+                ok = workbench_api.delete_kanban_task(parts[3])
+                return _json(self, {"ok": ok})
         except _HttpError as exc:
             return _json(self, {"error": exc.message}, exc.status)
         except Exception as exc:

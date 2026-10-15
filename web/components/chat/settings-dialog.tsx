@@ -1,12 +1,21 @@
 'use client'
 
-import { AlertTriangle, BookOpen, Check, ChevronRight, Loader2, Palette, Pencil, Sparkles, User, X } from 'lucide-react'
+import { AlertTriangle, BookOpen, Check, ChevronRight, Cpu, Loader2, Palette, Pencil, Plus, Sparkles, Trash2, User, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type MemoryFile } from '@/lib/api'
+import { api, type MemoryFile, type ModelsPayload } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { THEMES, THEME_META, useTheme } from '@/hooks/use-theme'
 
 const ICONS: Record<string, typeof BookOpen> = { memory: BookOpen, user: User, soul: Sparkles }
+
+function hostOf(url?: string): string {
+  if (!url) return ''
+  try {
+    return new URL(url).host
+  } catch {
+    return url.replace(/^https?:\/\//, '').split('/')[0]
+  }
+}
 
 const FILE_NOTE: Record<string, string> = {
   memory: '每次对话都会读到的长期事实。整份就是磁盘上的 MEMORY.md，一条一条用 § 分开。',
@@ -31,15 +40,16 @@ function countChars(key: string, text: string): number {
 
 const fmtK = (n: number) => n.toLocaleString('zh-CN')
 
-/** 左栏菜单的分组结构：分组里有多项 → 一级菜单可展开收起（默认收起）；
- *  只有一项 → 不做二级菜单，这一项直接当一级菜单用。 */
+/** 左栏菜单的分组结构：模型与渠道置于首位，方便用户随时进入管理与删除 */
 const NAV_GROUPS: { id: string; label: string; keys: string[] }[] = [
-  { id: 'memory', label: '记忆', keys: ['memory', 'user', 'soul'] },
-  { id: 'interface', label: '界面', keys: ['appearance'] },
+  { id: 'models', label: '模型与渠道', keys: ['models'] },
+  { id: 'memory', label: '记忆文件', keys: ['memory', 'user', 'soul'] },
+  { id: 'interface', label: '界面外观', keys: ['appearance'] },
 ]
 /** 已经被分组列到的 key。后端将来多出别的记忆文件时，它会补进「记忆」组，不会从菜单里消失。 */
 const GROUPED_KEYS = new Set(NAV_GROUPS.flatMap((g) => g.keys))
 const APPEARANCE_KEY = 'appearance'
+const MODELS_KEY = 'models'
 
 type NavEntry = { key: string; label: string; icon: typeof BookOpen; chars?: number }
 
@@ -85,7 +95,8 @@ function NavRow({
  *  配色只剩一套暖纸，不再提供切换。 */
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [files, setFiles] = useState<MemoryFile[]>([])
-  const [active, setActive] = useState('')
+  const [modelsPayload, setModelsPayload] = useState<ModelsPayload | null>(null)
+  const [active, setActive] = useState(MODELS_KEY)
   const [openGroups, setOpenGroups] = useState<string[]>([]) // 展开着的一级菜单（默认一个都不展开）
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -94,6 +105,16 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [savedMsg, setSavedMsg] = useState('')
   const [error, setError] = useState('')
   const { theme } = useTheme()
+
+  // 内联添加渠道与模型状态
+  const [addKind, setAddKind] = useState<'none' | 'channel' | 'model'>('none')
+  const [addName, setAddName] = useState('')
+  const [addBaseUrl, setAddBaseUrl] = useState('')
+  const [addApiKey, setAddApiKey] = useState('')
+  const [addModelId, setAddModelId] = useState('')
+  const [addContext, setAddContext] = useState('')
+  const [adding, setAdding] = useState(false)
+  const [addError, setAddError] = useState('')
 
   const file = files.find((f) => f.key === active)
   const chars = editing ? countChars(active, draft) : (file?.chars ?? 0)
@@ -104,6 +125,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const navItems = useMemo(() => {
     const entry = (key: string): NavEntry | null => {
       if (key === APPEARANCE_KEY) return { key, label: '外观', icon: Palette }
+      if (key === MODELS_KEY) return { key, label: '模型与渠道', icon: Cpu }
       const f = files.find((x) => x.key === key)
       return f ? { key, label: f.label, icon: ICONS[f.key] ?? BookOpen, chars: countChars(f.key, f.content) } : null
     }
@@ -137,6 +159,8 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       setActive(key)
       setEditing(false)
       setSavedMsg('')
+      setAddKind('none')
+      setAddError('')
     },
     [active, dirty],
   )
@@ -150,43 +174,32 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     [dirty],
   )
 
-  // 每次打开：拉一次文件，并把右栏清空（不默认停在某一项上）
+  // 每次打开：拉一次文件，并默认停在「模型与渠道」管理页
   useEffect(() => {
     if (!open) return
     setLoading(true)
     setError('')
     setSavedMsg('')
     setEditing(false)
-    setActive('')
+    setActive(MODELS_KEY)
+    setAddKind('none')
+    setAddError('')
     setOpenGroups([])
     api
       .memoryFiles()
       .then((r) => setFiles(r.files))
       .catch((e) => setError(String(e?.message || e)))
       .finally(() => setLoading(false))
+    api
+      .models()
+      .then(setModelsPayload)
+      .catch(() => {})
   }, [open])
 
   useEffect(() => {
     const f = files.find((x) => x.key === active)
     if (f) setDraft(f.content)
   }, [active, files])
-
-  // Esc：编辑中就退出编辑，否则关掉弹层
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      e.stopPropagation()
-      if (editing) {
-        leaveEdit()
-        return
-      }
-      if (dirty && !window.confirm('有没保存的改动，关掉就丢了。继续？')) return
-      onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [open, editing, dirty, leaveEdit, onClose])
 
   const save = useCallback(async () => {
     if (!file || saving) return
@@ -204,6 +217,30 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       setSaving(false)
     }
   }, [file, draft, saving])
+
+  // Esc：编辑中就退出编辑，否则关掉弹层；Cmd/Ctrl+S：快捷保存
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        if (editing && dirty && !saving) {
+          void save()
+        }
+        return
+      }
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      if (editing) {
+        leaveEdit()
+        return
+      }
+      if (dirty && !window.confirm('有没保存的改动，关掉就丢了。继续？')) return
+      onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, editing, dirty, saving, save, leaveEdit, onClose])
 
   const close = useCallback(() => {
     if (dirty && !window.confirm('有没保存的改动，关掉就丢了。继续？')) return
@@ -289,37 +326,594 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </nav>
 
           {active === '' ? (
-            /* 右栏（还没选）：刚打开时就是这一屏，给个轻量的入口列表 */
-            <section className="min-w-0 flex-1 overflow-y-auto px-6 pt-7" aria-label="还没选">
-              <h3 className="m-0 font-title text-[17px] font-semibold tracking-[0.005em]">记忆与外观</h3>
+            /* 右栏（还没选）：概览控制台，给个完整的入口卡片列表 */
+            <section className="min-w-0 flex-1 overflow-y-auto px-6 pt-7" aria-label="设置概览">
+              <h3 className="m-0 font-title text-[17px] font-semibold tracking-[0.005em]">系统设置概览</h3>
               <p className="mt-2 mb-4 max-w-[52ch] text-[12.5px] leading-relaxed text-muted">
-                左边选一项开始。三份记忆文件整份就是磁盘上的文件，点开可查看和编辑。
+                管理接入渠道、自定义模型、长期记忆及个性化外观。
               </p>
-              <ul className="m-0 list-none border-t border-line p-0">
-                {files.map((f) => {
-                  const Ico = ICONS[f.key] ?? BookOpen
-                  return (
-                    <li key={f.key} className="border-b border-line">
+              <div className="space-y-3 border-t border-line pt-4">
+                {/* 1. 模型与渠道入口卡片 */}
+                <button
+                  type="button"
+                  onClick={() => pick(MODELS_KEY)}
+                  className="flex w-full cursor-pointer items-center justify-between rounded-card border border-accent/40 bg-accent/[0.02] p-3.5 text-left transition-all hover:border-accent hover:bg-accent/[0.05]"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="grid size-9 place-items-center rounded-md bg-accent/15 text-accent-text">
+                      <Cpu size={18} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-ui text-[14px] font-semibold text-ink">模型与渠道管理</span>
+                        <span className="rounded bg-accent/15 px-1.5 py-0.2 font-mono text-[10.5px] text-accent-text">首选主阵地</span>
+                      </div>
+                      <div className="mt-0.5 text-[12px] text-muted">
+                        当前使用：<span className="font-mono text-ink-2">{modelsPayload?.current?.key || modelsPayload?.default_model || '系统默认'}</span>
+                        {` · 共 ${modelsPayload?.models?.length || 0} 个模型`}
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight size={16} className="text-muted" />
+                </button>
+
+                {/* 2. 长期记忆文件列表 */}
+                <div className="rounded-card border border-line bg-page p-3.5">
+                  <div className="mb-2 font-ui text-[13px] font-semibold text-ink">长期记忆与行为设定 (~/.hermes/)</div>
+                  <ul className="m-0 list-none divide-y divide-line/60 p-0">
+                    {files.map((f) => {
+                      const Ico = ICONS[f.key] ?? BookOpen
+                      return (
+                        <li key={f.key}>
+                          <button
+                            type="button"
+                            onClick={() => pick(f.key)}
+                            className="flex w-full cursor-pointer items-center justify-between py-2.5 text-left transition-colors hover:text-accent-text"
+                          >
+                            <span className="flex items-center gap-2">
+                              <Ico size={14} className="text-muted" />
+                              <span className="font-ui text-[13px] font-medium text-ink">{f.label}</span>
+                              <span className="hidden text-[11.5px] text-muted sm:inline">{FILE_NOTE[f.key]}</span>
+                            </span>
+                            <span className="font-mono text-[11px] tabular-nums text-muted">{fmtK(countChars(f.key, f.content))} 字</span>
+                          </button>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              </div>
+            </section>
+          ) : active === MODELS_KEY ? (
+            /* 右栏（模型与渠道）：展示已配置的渠道与模型概览、增删管理 */
+            <section className="flex min-w-0 flex-1 flex-col" aria-label="模型与渠道">
+              <div className="flex flex-none items-center justify-between border-b border-line px-5 py-3">
+                <div className="flex flex-col gap-0.5">
+                  <span className="font-title text-[15px] font-semibold text-ink">模型与渠道管理</span>
+                  <span className="font-mono text-[11.5px] text-muted">
+                    当前使用模型：<span className="font-medium text-accent-text">{modelsPayload?.current?.key || modelsPayload?.default_model || '系统默认'}</span>
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddKind(addKind === 'channel' ? 'none' : 'channel')
+                      setAddError('')
+                    }}
+                    className={cn(
+                      'inline-flex cursor-pointer items-center gap-1 rounded-md px-2.5 py-1.5 font-ui text-[12px] font-medium transition-all active:scale-[0.98]',
+                      addKind === 'channel'
+                        ? 'bg-accent text-on-accent'
+                        : 'border border-line-strong bg-panel text-ink hover:bg-raised',
+                    )}
+                  >
+                    <Plus size={13} />
+                    <span>添加渠道</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddKind(addKind === 'model' ? 'none' : 'model')
+                      setAddError('')
+                    }}
+                    className={cn(
+                      'inline-flex cursor-pointer items-center gap-1 rounded-md px-2.5 py-1.5 font-ui text-[12px] font-medium transition-all active:scale-[0.98]',
+                      addKind === 'model'
+                        ? 'bg-accent text-on-accent'
+                        : 'border border-line-strong bg-panel text-ink hover:bg-raised',
+                    )}
+                  >
+                    <Plus size={13} />
+                    <span>添加单模型</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-5 py-4">
+                {/* 内联添加渠道表单 */}
+                {addKind === 'channel' && (
+                  <div className="rounded-lg border border-accent/40 bg-accent/[0.03] p-4 shadow-sm">
+                    <div className="mb-2.5 flex items-center justify-between">
+                      <span className="font-title text-[13.5px] font-semibold text-accent-text">添加 OpenAI 兼容渠道</span>
                       <button
                         type="button"
-                        onClick={() => pick(f.key)}
-                        className="flex w-full cursor-pointer items-baseline gap-3 py-3 pr-1 pl-1 text-left transition-all hover:pl-2.5 hover:bg-panel"
+                        onClick={() => setAddKind('none')}
+                        className="cursor-pointer text-muted hover:text-ink"
                       >
-                        <Ico size={15} className="flex-none translate-y-[2px] text-accent-text" />
-                        <span className="w-[92px] flex-none font-title text-[14px] leading-normal font-semibold text-ink">
-                          {f.label}
-                        </span>
-                        <span className="min-w-0 flex-1 text-[12.5px] leading-normal text-muted">
-                          {FILE_NOTE[f.key]}
-                        </span>
-                        <span className="flex-none font-mono text-[11.5px] tabular-nums text-muted">
-                          {fmtK(countChars(f.key, f.content))}
-                        </span>
+                        <X size={15} />
                       </button>
-                    </li>
-                  )
-                })}
-              </ul>
+                    </div>
+                    <div className="grid gap-2.5 text-[12.5px]">
+                      <div>
+                        <label className="mb-1 block font-medium text-ink-2">渠道名称（可选，留空默认提取主机名）</label>
+                        <input
+                          type="text"
+                          placeholder="例如：Moonshot、SiliconFlow、中转聚合"
+                          value={addName}
+                          onChange={(e) => setAddName(e.target.value)}
+                          className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-ui text-[13px] text-ink outline-none focus:border-accent"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-ink-2">接口地址 Base URL（必填，以 http/https 开头）</label>
+                        <input
+                          type="text"
+                          placeholder="https://api.openai.com/v1"
+                          value={addBaseUrl}
+                          onChange={(e) => setAddBaseUrl(e.target.value)}
+                          className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-accent"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-ink-2">API 密钥 API Key（选填）</label>
+                        <input
+                          type="password"
+                          placeholder="sk-..."
+                          value={addApiKey}
+                          onChange={(e) => setAddApiKey(e.target.value)}
+                          className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-accent"
+                        />
+                      </div>
+                      {addError && <div className="text-[12px] text-danger">{addError}</div>}
+                      <div className="mt-1 flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAddKind('none')}
+                          className="cursor-pointer rounded-md px-3 py-1 text-[12px] text-muted hover:bg-raised"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          disabled={adding}
+                          onClick={async () => {
+                            if (!addBaseUrl.trim()) {
+                              setAddError('接口地址不能为空')
+                              return
+                            }
+                            setAdding(true)
+                            setAddError('')
+                            try {
+                              const res = await api.addChannel({
+                                name: addName.trim(),
+                                base_url: addBaseUrl.trim(),
+                                api_key: addApiKey.trim(),
+                              })
+                              if (!res.ok) throw new Error(res.error || '添加渠道失败')
+                              const updated = await api.models()
+                              setModelsPayload(updated)
+                              setAddKind('none')
+                              setAddName('')
+                              setAddBaseUrl('')
+                              setAddApiKey('')
+                            } catch (err) {
+                              setAddError(String((err as Error)?.message || err))
+                            } finally {
+                              setAdding(false)
+                            }
+                          }}
+                          className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-accent px-3.5 py-1 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-text disabled:opacity-50"
+                        >
+                          {adding ? <Loader2 size={13} className="animate-spin" /> : null}
+                          <span>确认添加渠道</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 内联添加单模型表单 */}
+                {addKind === 'model' && (
+                  <div className="rounded-lg border border-accent/40 bg-accent/[0.03] p-4 shadow-sm">
+                    <div className="mb-2.5 flex items-center justify-between">
+                      <span className="font-title text-[13.5px] font-semibold text-accent-text">添加独立自定义模型</span>
+                      <button
+                        type="button"
+                        onClick={() => setAddKind('none')}
+                        className="cursor-pointer text-muted hover:text-ink"
+                      >
+                        <X size={15} />
+                      </button>
+                    </div>
+                    <div className="grid gap-2.5 text-[12.5px]">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="mb-1 block font-medium text-ink-2">模型显示名称（可选）</label>
+                          <input
+                            type="text"
+                            placeholder="例如：Claude 3.7 Sonnet"
+                            value={addName}
+                            onChange={(e) => setAddName(e.target.value)}
+                            className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-ui text-[13px] text-ink outline-none focus:border-accent"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block font-medium text-ink-2">模型真实 ID（必填）</label>
+                          <input
+                            type="text"
+                            placeholder="claude-3-7-sonnet-20250219"
+                            value={addModelId}
+                            onChange={(e) => setAddModelId(e.target.value)}
+                            className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-accent"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="mb-1 block font-medium text-ink-2">接口地址 Base URL（必填）</label>
+                        <input
+                          type="text"
+                          placeholder="https://api.openai.com/v1"
+                          value={addBaseUrl}
+                          onChange={(e) => setAddBaseUrl(e.target.value)}
+                          className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-accent"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="mb-1 block font-medium text-ink-2">API 密钥 API Key（选填）</label>
+                          <input
+                            type="password"
+                            placeholder="sk-..."
+                            value={addApiKey}
+                            onChange={(e) => setAddApiKey(e.target.value)}
+                            className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-accent"
+                          />
+                        </div>
+                        <div>
+                          <label className="mb-1 block font-medium text-ink-2">上下文长度（可选，Token 数）</label>
+                          <input
+                            type="text"
+                            placeholder="例如：128000"
+                            value={addContext}
+                            onChange={(e) => setAddContext(e.target.value)}
+                            className="w-full rounded-md border border-line bg-page px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none focus:border-accent"
+                          />
+                        </div>
+                      </div>
+                      {addError && <div className="text-[12px] text-danger">{addError}</div>}
+                      <div className="mt-1 flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setAddKind('none')}
+                          className="cursor-pointer rounded-md px-3 py-1 text-[12px] text-muted hover:bg-raised"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          disabled={adding}
+                          onClick={async () => {
+                            if (!addBaseUrl.trim() || !addModelId.trim()) {
+                              setAddError('接口地址与模型 ID 必填')
+                              return
+                            }
+                            setAdding(true)
+                            setAddError('')
+                            try {
+                              const res = await api.addModel({
+                                name: addName.trim(),
+                                base_url: addBaseUrl.trim(),
+                                api_key: addApiKey.trim(),
+                                model_id: addModelId.trim(),
+                                context_length: addContext.trim() || undefined,
+                              })
+                              if (!res.ok) throw new Error(res.error || '添加模型失败')
+                              const updated = await api.models()
+                              setModelsPayload(updated)
+                              setAddKind('none')
+                              setAddName('')
+                              setAddBaseUrl('')
+                              setAddApiKey('')
+                              setAddModelId('')
+                              setAddContext('')
+                            } catch (err) {
+                              setAddError(String((err as Error)?.message || err))
+                            } finally {
+                              setAdding(false)
+                            }
+                          }}
+                          className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-accent px-3.5 py-1 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-text disabled:opacity-50"
+                        >
+                          {adding ? <Loader2 size={13} className="animate-spin" /> : null}
+                          <span>确认添加模型</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 分区一：用户自定义接入的渠道与模型（支持全功能删除） */}
+                <div>
+                  <div className="mb-2 flex items-center justify-between text-[12.5px] font-medium text-ink">
+                    <span className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-accent" />
+                      <span>自定义接入渠道与模型</span>
+                      <span className="rounded-full bg-accent/15 px-2 py-0.2 font-mono text-[10.5px] font-normal text-accent-text">
+                        支持删除
+                      </span>
+                    </span>
+                    <span className="font-normal text-[11px] text-muted">包含你自主添加的渠道与单模型</span>
+                  </div>
+
+                  {(() => {
+                    const customChannels = modelsPayload?.channels || []
+                    const standaloneCustomModels = (modelsPayload?.models || []).filter(
+                      (m) => m.source === 'custom' && !m.channel_id,
+                    )
+                    const hasCustom = customChannels.length > 0 || standaloneCustomModels.length > 0
+
+                    if (!hasCustom) {
+                      return (
+                        <div className="rounded-card border border-dashed border-line bg-page/60 p-4 text-center">
+                          <p className="text-[12.5px] text-muted">暂无自定义渠道或模型。</p>
+                          <p className="mt-1 text-[11px] text-faint">
+                            可点击右上角「+ 添加渠道」或「+ 添加单模型」接入你自己的第三方 API。
+                          </p>
+                        </div>
+                      )
+                    }
+
+                    return (
+                      <div className="space-y-3">
+                        {/* 1. 自定义渠道卡片 */}
+                        {customChannels.map((ch) => {
+                          const chModels = (modelsPayload?.models || []).filter((m) => m.channel_id === ch.id)
+                          const isCurChan = chModels.some((m) => m.key === modelsPayload?.current?.key)
+                          return (
+                            <div
+                              key={ch.id}
+                              className={cn(
+                                'rounded-card border p-3.5 transition-all bg-page shadow-[0_1px_2px_rgba(45,45,42,0.02)]',
+                                isCurChan ? 'border-accent/40 bg-accent/[0.02]' : 'border-line',
+                              )}
+                            >
+                              <div className="mb-2.5 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-ui text-[13.5px] font-semibold text-ink">{ch.name || ch.id}</span>
+                                  <span className="rounded-md bg-accent/10 px-1.5 py-0.5 font-mono text-[10.5px] text-accent-text">
+                                    自定义渠道
+                                  </span>
+                                  {isCurChan && (
+                                    <span className="rounded-full bg-accent/20 px-2 py-0.5 text-[10.5px] font-medium text-accent-text">
+                                      在用
+                                    </span>
+                                  )}
+                                  <span className="font-mono text-[11px] text-muted">
+                                    ({chModels.length} 个模型 · {hostOf(ch.base_url)})
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  title="删除此渠道及全部关联模型"
+                                  onClick={async (e) => {
+                                    e.stopPropagation()
+                                    if (!window.confirm(`确定要删除渠道「${ch.name || ch.id}」吗？\n该渠道下的全部 ${chModels.length} 个模型都将被彻底移除。`)) return
+                                    try {
+                                      await api.removeChannel(ch.id)
+                                      const updated = await api.models()
+                                      setModelsPayload(updated)
+                                    } catch (err) {
+                                      alert(`删除渠道失败：${String((err as Error)?.message || err)}`)
+                                    }
+                                  }}
+                                  className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-danger/30 bg-danger/5 px-2.5 py-1 text-[11.5px] font-medium text-danger transition-all hover:bg-danger hover:text-white active:scale-[0.98]"
+                                >
+                                  <Trash2 size={12} />
+                                  <span>删除渠道</span>
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap gap-1.5">
+                                {chModels.map((m) => {
+                                  const isCur = m.key === modelsPayload?.current?.key
+                                  return (
+                                    <span
+                                      key={m.key}
+                                      className={cn(
+                                        'group/model inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11.5px] transition-colors',
+                                        isCur
+                                          ? 'border-accent bg-accent/10 font-medium text-accent-text'
+                                          : 'border-line/70 bg-panel/60 text-ink-2',
+                                      )}
+                                    >
+                                      <span>{m.name || m.key}</span>
+                                      {m.context_length ? (
+                                        <span className="text-[10px] opacity-60">({Math.round(m.context_length / 1000)}k)</span>
+                                      ) : null}
+                                      {isCur && (
+                                        <span className="rounded bg-accent/20 px-1 py-0.2 text-[10px] font-medium text-accent-text">
+                                          在用
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        title={isCur ? "此模型当前正在使用中，点击移除并恢复为系统默认模型" : `从渠道中移除模型「${m.name || m.key}」`}
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          const confirmMsg = isCur
+                                            ? `确定要移除模型「${m.name || m.key}」吗？\n注意：该模型当前正在使用中，移除后将自动恢复为系统默认模型。`
+                                            : `确定要移除模型「${m.name || m.key}」吗？`
+                                          if (!window.confirm(confirmMsg)) return
+                                          try {
+                                            await api.removeModel(m.key)
+                                            const updated = await api.models()
+                                            setModelsPayload(updated)
+                                          } catch (err) {
+                                            alert(`移除模型失败：${String((err as Error)?.message || err)}`)
+                                          }
+                                        }}
+                                        className="ml-0.5 inline-flex size-4 cursor-pointer items-center justify-center rounded-full text-muted transition-colors hover:bg-danger/20 hover:text-danger active:scale-95"
+                                      >
+                                        <X size={11} strokeWidth={2.5} />
+                                      </button>
+                                    </span>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          )
+                        })}
+
+                        {/* 2. 独立添加的自定义模型卡片 */}
+                        {standaloneCustomModels.length > 0 && (
+                          <div className="rounded-card border border-line bg-page p-3.5 shadow-[0_1px_2px_rgba(45,45,42,0.02)]">
+                            <div className="mb-2.5 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="font-ui text-[13.5px] font-semibold text-ink">自定义独立模型</span>
+                                <span className="rounded-md bg-accent/10 px-1.5 py-0.5 font-mono text-[10.5px] text-accent-text">
+                                  独立添加
+                                </span>
+                                <span className="font-mono text-[11px] text-muted">
+                                  ({standaloneCustomModels.length} 个模型)
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {standaloneCustomModels.map((m) => {
+                                const isCur = m.key === modelsPayload?.current?.key
+                                return (
+                                  <span
+                                    key={m.key}
+                                    className={cn(
+                                      'group/model inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors',
+                                      isCur
+                                        ? 'border-accent bg-accent/10 font-medium text-accent-text'
+                                        : 'border-line/80 bg-panel/70 text-ink',
+                                    )}
+                                  >
+                                    <span>{m.name || m.key}</span>
+                                    {m.base_url && (
+                                      <span className="font-mono text-[10.5px] opacity-60">
+                                        ({hostOf(m.base_url)})
+                                      </span>
+                                    )}
+                                    {isCur && (
+                                      <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10px] font-medium text-accent-text">
+                                        在用
+                                      </span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      title={isCur ? "此模型当前正在使用中，点击移除并恢复为系统默认模型" : `移除模型「${m.name || m.key}」`}
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        const confirmMsg = isCur
+                                          ? `确定要移除模型「${m.name || m.key}」吗？\n注意：该模型当前会话正在使用，移除后将自动恢复为系统默认模型。`
+                                          : `确定要移除模型「${m.name || m.key}」吗？`
+                                        if (!window.confirm(confirmMsg)) return
+                                        try {
+                                          await api.removeModel(m.key)
+                                          const updated = await api.models()
+                                          setModelsPayload(updated)
+                                        } catch (err) {
+                                          alert(`移除模型失败：${String((err as Error)?.message || err)}`)
+                                        }
+                                      }}
+                                      className="ml-1 inline-flex size-4 cursor-pointer items-center justify-center rounded-full text-muted transition-colors hover:bg-danger/20 hover:text-danger active:scale-95"
+                                    >
+                                      <X size={12} strokeWidth={2.5} />
+                                    </button>
+                                  </span>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </div>
+
+                {/* 分区二：系统内置渠道（受 Hermes 配置文件保护） */}
+                <div className="mt-2 border-t border-line/70 pt-4">
+                  <div className="mb-2 flex items-center justify-between text-[12.5px] font-medium text-ink">
+                    <span className="flex items-center gap-1.5">
+                      <span className="size-2 rounded-full bg-muted/60" />
+                      <span>系统预设渠道与模型</span>
+                      <span className="rounded-full bg-panel px-2 py-0.2 font-mono text-[10.5px] font-normal text-muted">
+                        ~/.hermes/config.yaml
+                      </span>
+                    </span>
+                    <span className="font-normal text-[11px] text-muted">系统内置项不可直接在网页删除</span>
+                  </div>
+
+                  <div className="space-y-2.5 opacity-90">
+                    {Array.from(
+                      new Set(
+                        (modelsPayload?.models || [])
+                          .filter((m) => m.source === 'hermes' || !m.source)
+                          .map((m) => m.provider || '内置渠道'),
+                      ),
+                    ).map((prov) => {
+                      const provModels = (modelsPayload?.models || []).filter(
+                        (m) => (m.source === 'hermes' || !m.source) && (m.provider || '内置渠道') === prov,
+                      )
+                      const isCurProv = provModels.some((m) => m.key === modelsPayload?.current?.key)
+                      return (
+                        <div
+                          key={prov}
+                          className={cn(
+                            'rounded-card border p-3 transition-all bg-page/70',
+                            isCurProv ? 'border-accent/40 bg-accent/[0.02]' : 'border-line/70',
+                          )}
+                        >
+                          <div className="mb-2 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="font-ui text-[13px] font-medium text-ink-2">{prov}</span>
+                              {isCurProv && (
+                                <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10.5px] font-medium text-accent-text">
+                                  使用中
+                                </span>
+                              )}
+                              <span className="font-mono text-[11px] text-muted">({provModels.length} 个模型)</span>
+                            </div>
+                            <span className="font-mono text-[10.5px] text-muted/70">内置预设</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {provModels.map((m) => {
+                              const isCur = m.key === modelsPayload?.current?.key
+                              return (
+                                <span
+                                  key={m.key}
+                                  className={cn(
+                                    'inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-[11px]',
+                                    isCur
+                                      ? 'border-accent bg-accent/10 font-medium text-accent-text'
+                                      : 'border-line/60 bg-panel/40 text-muted',
+                                  )}
+                                >
+                                  <span>{m.name || m.key}</span>
+                                  {isCur && <span className="text-[10px] text-accent-text">· 在用</span>}
+                                </span>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
             </section>
           ) : active === 'appearance' ? (
             /* 右栏（外观）：只剩一套，展示当前配色，不可切换 */
@@ -328,9 +922,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 <span className="font-title text-[15px] font-semibold">配色</span>
                 <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted">目前只有这一套</span>
               </div>
-              <p className="m-0 flex-none px-5 pb-4 text-[12.5px] leading-relaxed text-muted">
-                米白棉纸配赭石印泥，像信笺，长时间看也不刺眼。深色 / 冷纸两套已经移除。
-              </p>
               <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-5 pb-5">
                 {THEMES.map((t) => {
                   const m = THEME_META[t]
@@ -407,9 +998,32 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                     />
                   ) : (
                     <div className="min-h-0 flex-1 overflow-y-auto rounded-md px-3.5 py-3">
-                      <pre className="m-0 font-read text-[14.5px] leading-[1.9] whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">
-                        {file?.content ?? ''}
-                      </pre>
+                      {file?.content?.includes('§') ? (
+                        <div className="space-y-2.5">
+                          {file.content
+                            .split('\n§\n')
+                            .map((s) => s.trim())
+                            .filter(Boolean)
+                            .map((entry, idx) => (
+                              <div
+                                key={idx}
+                                className="rounded-card border border-line bg-page p-3.5 shadow-[0_1px_2px_rgba(45,45,42,0.02)] transition-colors hover:border-line-strong"
+                              >
+                                <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px] font-medium text-accent-text">
+                                  <span className="size-1 rounded-full bg-accent-text" />
+                                  条目 §{String(idx + 1).padStart(2, '0')}
+                                </div>
+                                <div className="font-read text-[14px] leading-[1.8] whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">
+                                  {entry}
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-card border border-line bg-page p-4 font-read text-[14.5px] leading-[1.9] whitespace-pre-wrap text-ink [overflow-wrap:anywhere] shadow-[0_1px_2px_rgba(45,45,42,0.02)]">
+                          {file?.content || '（暂无内容）'}
+                        </div>
+                      )}
                     </div>
                   )}
                   {over && (
@@ -430,7 +1044,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                       <Check size={12} /> {savedMsg}
                     </span>
                   ) : editing ? (
-                    '保存后文件立刻更新；正在进行的这段对话仍按旧内容走，从下一段新对话开始读取。'
+                    '保存后文件立刻更新；按 Cmd+S / Ctrl+S 快速保存，从下一段新对话读取生效。'
                   ) : null}
                 </span>
                 {editing ? (

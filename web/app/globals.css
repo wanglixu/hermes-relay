@@ -148,7 +148,13 @@
   border-radius: var(--radius-composer);
   background: var(--color-input);
   box-shadow: var(--shadow-input);
-  transition: box-shadow 180ms ease;
+  transition: box-shadow 180ms ease, border-radius 180ms ease, padding 180ms ease;
+}
+
+/* 多行输入态：收敛成更从容端庄的书信卡片圆角（16px），避免拉高后变成紧绷的扁药丸 */
+.composer-box.composer-box-multiline {
+  border-radius: 16px;
+  padding: 12px 14px 10px 14px;
 }
 
 /* 强调态 = 影子抬高一层（常态 → 强调）。两个条件都算强调：聚焦时（focus-within），
@@ -183,6 +189,8 @@
 /* 行与行之间统一 2px（工具行的容器自己没有下边距，不补会紧贴下一行） */
 .prose-relay > .fold-toggle,
 .prose-relay > details.group,
+.prose-relay > div.group,
+.prose-relay > .tool-row,
 .prose-relay > div.pl-6 {
   margin-bottom: 2px;
 }
@@ -204,21 +212,23 @@
    旧写法是「正文块最后一段的 20px 下边距 − 过程行的负补偿」，那个算法遇到下边距不是 20px 的情况
    就会算出别的值甚至负值（2026-10-13 实测流式那处 −12px，正文和工具行压在一起）。 */
 .prose-relay
-  > div.prose-relay:has(+ .fold-toggle, + details.group, + div.pl-6)
+  > div.prose-relay:has(+ .fold-toggle, + details.group, + div.group, + .tool-row, + div.pl-6)
   > :is(div, .stream-tail)
   > :last-child {
   margin-bottom: 0;
 }
 
-.prose-relay > div.prose-relay:has(+ .fold-toggle, + details.group, + div.pl-6) {
+.prose-relay > div.prose-relay:has(+ .fold-toggle, + details.group, + div.group, + .tool-row, + div.pl-6) {
   margin-bottom: 4px;
 }
 
 /* 过程行 → **紧随其后的正文块**：那一段是新一轮输出，与上面的过程记录拉开（14px）。
-   注意链（折叠起来的「思考 N 段 · 工具 N 次」）的这条间距必须**落在整条链之后**（见下面 fold-body 那条），
+   注意链（折叠起来的「思考 N段 · 工具 N次」）的这条间距必须**落在整条链之后**（见下面 fold-body 那条），
    落在标题行 `.fold-toggle` 上会让展开的内容与标题行之间凭空多出 14px —— 用户实测反馈「展开后反而看起来更远」。 */
 .prose-relay > .fold-toggle:has(+ div.prose-relay),
 .prose-relay > details.group:has(+ div.prose-relay),
+.prose-relay > div.group:has(+ div.prose-relay),
+.prose-relay > .tool-row:has(+ div.prose-relay),
 .prose-relay > div.pl-6:has(+ div.prose-relay) {
   margin-bottom: 14px;
 }
@@ -473,7 +483,7 @@ body::after {
    （见 components/chat/file-preview.tsx）。
    ───────────────────────────────────────────────────────────── */
 .app-shell[data-preview='1'] {
-  grid-template-columns: 272px minmax(0, 1fr) clamp(320px, 42%, 720px);
+  grid-template-columns: 260px minmax(0, 1fr) clamp(320px, 42%, 720px);
 }
 
 @media (max-width: 900px) {
@@ -579,19 +589,22 @@ button:not(:disabled):active {
   transform: none;
 }
 
-/* 6. 折叠块（思考 / 工具行 / 折叠行）：高度动画交给 messages.tsx 的 animateFold() 用 JS 驱动。
-   这里只保证两件事：
-   1) 收起时内容**留在渲染树里** —— UA 默认给收起态的 ::details-content 设 content-visibility: hidden，
-      那样高度只能靠 UA 切换，JS 没法平滑驱动（用 :not([open]) 提高特定性才能盖住 UA）；
-   2) 内容容器裁切溢出。
-   为什么不走 CSS 过渡：滚动补偿必须和高度变化在同一帧里一起写，而 CSS 过渡的当前值
-   在 rAF 里读不到（总是慢一帧），靠事后修正会逐帧过冲，整个页面跟着抖。
-   ⚠️ 必须限定在 `.prose-relay` 内：侧栏那些原生 <details>（例如会话下面的「N 个子代理」）
-   完全靠 UA 的收起行为来藏内容，被这条规则波及后会变成「标着收起、内容却一直显示」
-   （2026-10-13 用户报的）。消息区的折叠块不受影响，因为它们另有一层
-   `.fold-body { height: 0; overflow: hidden }` 兜着。 */
-.prose-relay details:not([open])::details-content {
-  content-visibility: visible;
+/* 6. 折叠块（思考 / 工具行 / 折叠链）：CSS Grid 硬件加速零 JS 驱动（Antigravity / Open WebUI 标准实现）。
+   利用 grid-template-rows 0fr -> 1fr，浏览器在合成线程由上向下展开内容。
+   无需 JS rAF 滚动补偿，上方所有文本与触发按钮绝对静止，零抖动、零位移。 */
+.fold-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.fold-grid[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.fold-grid-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .fold-body {

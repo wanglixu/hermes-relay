@@ -17,7 +17,7 @@ import sql from '@shikijs/langs/sql'
 import toml from '@shikijs/langs/toml'
 import typescript from '@shikijs/langs/typescript'
 import yaml from '@shikijs/langs/yaml'
-import githubLight from '@shikijs/themes/github-light'
+import everforestLight from '@shikijs/themes/everforest-light'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 
@@ -28,10 +28,11 @@ export function renderMarkdown(md: string): string {
   return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
 }
 
-/** 代码高亮主题：唯一配色是暖纸（浅色），固定用 github-light。
+/** 代码高亮主题：契合「暖纸」调性（米白棉纸 + 墨水印刷），
+ *  使用 everforest-light（温润的书刊森林与大地色系：鼠尾草绿、赤陶赭、岩灰墨与琥珀黄）。
  *  语法颜色是写进 inline style 的；配色不再可切，所以不需要按主题重算。 */
 function currentTheme() {
-  return githubLight
+  return everforestLight
 }
 const LANG_ALIAS: Record<string, string> = {
   bash: 'bash',
@@ -76,7 +77,7 @@ let hlPromise: Promise<HighlighterCore> | null = null
 function highlighter(): Promise<HighlighterCore> {
   if (!hlPromise) {
     hlPromise = createHighlighterCore({
-      themes: [githubLight],
+      themes: [everforestLight],
       langs: [
         bash,
         json,

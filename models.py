@@ -285,6 +285,26 @@ def add_custom(name: str, base_url: str, api_key: str, model_id: str, context_le
 def remove_custom(key: str) -> bool:
     with _lock:
         data = _load()
+        if "/" in key and key.startswith("custom:"):
+            # 属于某个渠道下的模型：从对应渠道的 models 列表里移除
+            raw = key.split("custom:", 1)[1]
+            cid, mid = raw.split("/", 1)
+            channels = data.get("channels") or []
+            target = next((c for c in channels if str(c.get("id") or "") == cid), None)
+            if not target:
+                return False
+            models_list = target.get("models") or []
+            left_models = [m for m in models_list if (m.get("model_id") if isinstance(m, dict) else str(m)) != mid]
+            if len(left_models) == len(models_list):
+                return False
+            target["models"] = left_models
+            cur = data.get("current") or {}
+            if cur.get("key") == key:
+                cur.pop("key", None)
+                data["current"] = cur
+            _save(data)
+            return True
+
         custom = data.get("custom") or []
         left = [c for c in custom if c.get("key") != key]
         if len(left) == len(custom):
@@ -308,13 +328,13 @@ def make_channel_key(channel_id: str, model_id: str) -> str:
 
 
 def _channel_host(base_url: str) -> str:
-    """地址里的主机名：https://api.example.com/v1 → api.example.com"""
+    """地址里的主机名：https://sub.lunarfox.cn/v1 → sub.lunarfox.cn"""
     host = urllib.parse.urlsplit(base_url or "").netloc or ""
     return host.split("@")[-1].split(":")[0]
 
 
 def _channel_id(base_url: str, taken: set) -> str:
-    """从地址生成稳定的渠道 id：api.example.com → api-example-com（撞了就加 -2）。"""
+    """从地址生成稳定的渠道 id：sub.lunarfox.cn → sub-lunarfox-cn（撞了就加 -2）。"""
     host = _channel_host(base_url) or (base_url or "")
     base = re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-") or "channel"
     cid, n = base, 1

@@ -21,6 +21,16 @@ export type Compaction = {
   seconds?: number | null
   before_tokens?: number | null
   after_tokens?: number | null
+  /* 下面四个是 Hermes 的 summarize_manual_compression() 给出的判定（详见后端 compress.py），
+     界面按它决定怎么说，不自己猜。老记录里没有这几个键。 */
+  /** 摘要比原文长，Hermes 原地放弃、一条消息都没删 */
+  refused_would_grow?: boolean | null
+  /** 摘要生成失败，消息没动 */
+  aborted?: boolean | null
+  /** 摘要失败，用降级上下文硬压的 */
+  fallback_used?: boolean | null
+  /** 跟没压一样 */
+  noop?: boolean | null
 }
 
 export type AgentRun = {
@@ -58,6 +68,10 @@ export type Msg = {
     seconds?: number | null
     before_tokens?: number | null
     after_tokens?: number | null
+    refused_would_grow?: boolean | null
+    aborted?: boolean | null
+    fallback_used?: boolean | null
+    noop?: boolean | null
   }[] // 这一轮之后压过上下文
 }
 
@@ -82,7 +96,11 @@ export type ContextStats = {
   output_tokens: number
   cache_read: number
   cache_write: number
-  cache_hit_rate: number
+  cache_hit_rate: number | null
+  /** 'model' = 只算当前模型；'session' = 这个模型还没跑过，退回全会话 */
+  cache_scope?: 'model' | 'session' | ''
+  /** 本会话用过的其他模型（换模型后缓存基线要重算，所以不算它们） */
+  cache_other_models?: string[]
   /** 逐轮实测：Hermes 每轮当场报的计数（只覆盖加了埋点之后跑的轮次）。 */
   turn_stats?: {
     turns: number
@@ -96,6 +114,77 @@ export type ContextStats = {
 }
 
 export type Skill = { name: string; description: string; category: string; path: string; last_used?: number | null }
+
+export type KanbanTask = {
+  id: string
+  title: string
+  body?: string
+  assignee?: string
+  status: 'triage' | 'todo' | 'ready' | 'running' | 'blocked' | 'done'
+  priority?: number
+  created_at: number
+  started_at?: number | null
+  completed_at?: number | null
+  workspace_kind?: string
+  consecutive_failures?: number
+  last_failure_error?: string | null
+}
+
+export type CronJob = {
+  id: string
+  name: string
+  prompt?: string
+  script?: string
+  schedule?: { kind: string; expr: string; display: string }
+  enabled: boolean
+  state?: string
+  next_run_at?: string
+  last_run_at?: string
+  last_status?: string
+  recent_execution?: {
+    id: string
+    status: string
+    started_at: string
+    finished_at: string
+    error?: string | null
+  }
+}
+
+export type ProcessItem = {
+  pid: number
+  ppid: number
+  user: string
+  cpu: number
+  mem: number
+  elapsed: string
+  command: string
+  name: string
+  type: 'hermes' | 'web' | 'system'
+}
+
+export type SystemProcessesPayload = {
+  loadavg: number[]
+  memory: {
+    total_mb: number
+    available_mb: number
+    used_mb: number
+    used_percent: number
+  }
+  processes: ProcessItem[]
+  hermes_managed?: any[]
+}
+
+export type ArtifactFile = {
+  path: string
+  name: string
+  ext: string
+  kind: 'html' | 'svg' | 'markdown' | 'code' | 'text'
+  size: number
+  mtime: number
+  is_html?: boolean
+  is_svg?: boolean
+  is_markdown?: boolean
+}
 
 /** 模型反过来问用户（原生 clarify 工具）的一道题。choices 里第一项带「(Recommended)」后缀。 */
 export type ClarifyQuestion = {
@@ -118,7 +207,14 @@ export type TurnEvent =
   | { type: 'tool' | 'tool_start'; name: string; brief?: string; args?: string }
   | { type: 'tool_end'; name: string; ok?: boolean | null; result?: string }
   | { type: 'status'; kind: string; text: string }
-  | { type: 'approval'; request_id: string; command: string; description: string }
+  | {
+      type: 'approval'
+      request_id: string
+      command: string
+      description: string
+      timeout_sec?: number
+      deadline?: number
+    }
   | { type: 'clarify'; clarify_id: string; questions: ClarifyQuestion[]; batch?: boolean; timeout_seconds?: number }
   | { type: 'clarify_end'; clarify_id: string }
   | { type: 'error'; message: string; detail?: string }
@@ -321,6 +417,44 @@ export const api = {
       headers: { 'Content-Type': file.type || 'application/octet-stream' },
       body: file,
     }).then((r) => j<Attachment>(r)),
+  // ── 工作台核心扩展 ────────────────────────────────────
+  kanbanTasks: (status?: string) => {
+    const q = status ? `?status=${encodeURIComponent(status)}` : ''
+    return fetch(`/api/kanban/tasks${q}`).then((r) => j<{ tasks: KanbanTask[] }>(r))
+  },
+  createKanbanTask: (data: Partial<KanbanTask>) =>
+    fetch('/api/kanban/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then((r) => j<{ ok: boolean; task: KanbanTask }>(r)),
+  updateKanbanTask: (id: string, updates: Partial<KanbanTask>) =>
+    fetch(`/api/kanban/tasks/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    }).then((r) => j<{ ok: boolean; task?: KanbanTask }>(r)),
+  deleteKanbanTask: (id: string) =>
+    fetch(`/api/kanban/tasks/${id}`, { method: 'DELETE' }).then((r) => j<{ ok: boolean }>(r)),
+  cronJobs: () => fetch('/api/cron/jobs').then((r) => j<{ jobs: CronJob[] }>(r)),
+  toggleCron: (id: string, enabled: boolean) =>
+    fetch('/api/cron/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, enabled }),
+    }).then((r) => j<{ ok: boolean }>(r)),
+  runCron: (id: string) =>
+    fetch('/api/cron/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then((r) => j<{ ok: boolean; dispatched?: string; error?: string; note?: string }>(r)),
+  systemProcesses: () => fetch('/api/system/processes').then((r) => j<SystemProcessesPayload>(r)),
+  systemLogs: (file = 'agent.log', lines = 150) =>
+    fetch(`/api/system/logs?file=${encodeURIComponent(file)}&lines=${lines}`).then((r) =>
+      j<{ ok: boolean; file: string; lines: string[]; mtime?: number; size?: number }>(r),
+    ),
+  artifacts: () => fetch('/api/artifacts/files').then((r) => j<{ files: ArtifactFile[] }>(r)),
 }
 
 /** 读一条 SSE 流，逐事件回调。断开不重连：一轮对话只有一条连接。 */

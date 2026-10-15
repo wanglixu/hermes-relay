@@ -101,29 +101,29 @@ export function Sidebar({
           open ? 'max-[900px]:translate-x-0' : 'max-[900px]:-translate-x-full',
         )}
       >
-        <div className="flex items-center gap-2 px-3.5 pt-3.5 pb-2.5">
-          <span className="grid size-5 flex-none place-items-center rounded-md bg-accent font-title text-[12px] leading-none font-semibold text-on-accent">
-            R
+        <div className="flex items-center justify-between px-3.5 pt-3 pb-2">
+          <span className="font-title text-[15px] font-semibold tracking-[0.01em] text-ink">
+            聊天
           </span>
-          <span className="font-title text-[15px] leading-[1.7] font-semibold tracking-[0.005em]">
-            Hermes Relay
-          </span>
-          <button
-            className="ml-auto hidden rounded-md p-[6px] text-muted hover:bg-raised hover:text-ink max-[900px]:inline-flex"
-            onClick={onClose}
-            aria-label="收起会话列表"
-          >
-            <X size={17} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onNew}
+              className="grid size-7 place-items-center rounded-md text-ink-2 transition-colors hover:bg-raised hover:text-ink cursor-pointer"
+              title="新对话"
+              aria-label="新对话"
+            >
+              <Plus size={16} strokeWidth={2.2} />
+            </button>
+            <button
+              className="hidden rounded-md p-1 text-muted hover:bg-raised hover:text-ink max-[900px]:inline-flex"
+              onClick={onClose}
+              aria-label="收起会话列表"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
-
-        <button
-          onClick={onNew}
-          className="mx-3 mt-0.5 mb-2 flex h-[34px] items-center justify-center gap-1.5 rounded-lg bg-accent text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent/86"
-        >
-          <Plus size={14} strokeWidth={2.6} />
-          新对话
-        </button>
 
         <div className="px-3 pb-1.5">
           <div className="relative">
@@ -136,8 +136,8 @@ export function Sidebar({
               type="text"
               value={query}
               onChange={(e) => onQuery(e.target.value)}
-              placeholder="搜索会话"
-              aria-label="搜索会话"
+              placeholder="筛选对话..."
+              aria-label="筛选对话"
               className="h-[32px] w-full rounded-lg border border-line bg-page pr-8 pl-7 text-[12.5px] text-ink transition-colors placeholder:text-muted focus:border-line-strong focus:outline-none"
             />
             {query && (

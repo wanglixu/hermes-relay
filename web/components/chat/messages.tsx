@@ -7,16 +7,29 @@ import { cn } from '@/lib/cn'
 import { Markdown } from './markdown-view'
 import { zoomImage } from './image-zoom'
 
-/** 折叠行末尾的箭头：折叠指右、展开指下 */
-function Chevron({ className }: { className?: string }) {
+/** 折叠行末尾的箭头：折叠指右、展开顺畅旋转指下 */
+function Chevron({ open, className }: { open?: boolean; className?: string }) {
   return (
-    <span
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
       aria-hidden="true"
       className={cn(
-        'ml-1.5 size-[5px] flex-none self-center rotate-[-45deg] border-r border-b border-muted transition-transform',
+        'ml-1 size-[10px] flex-none text-muted transition-transform duration-180',
+        open ? 'rotate-90 text-ink-2' : 'rotate-0',
         className,
       )}
-    />
+    >
+      <path
+        d="M3.5 2.2 6.5 5 3.5 7.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   )
 }
 
@@ -25,90 +38,43 @@ function Dot({ className }: { className?: string }) {
   return (
     <span
       aria-hidden="true"
-      className={cn('size-[5px] flex-none -translate-y-[2px] rounded-full', className)}
+      className={cn('size-[5.5px] flex-none rounded-full', className)}
     />
   )
 }
 
-const easeOutCubic = (p: number) => 1 - Math.pow(1 - p, 3)
-/** 折叠动画的时长随距离走，让三种折叠块「看起来速度一致」。
- *  之前固定 220ms：内容少的块（思考详情）一闪而过；内容多的块（「思考 N 段」展开一大串）
- *  同样在 220ms 里冲完，每帧位移过大、看着像一跳一跳。
- *  现在按下距离给时长，每帧的位移量大致恒定。要整体调快就调大 FOLD_PX_PER_MS。 */
-// 2026-10-13：这两个值一度被设成 0（排查抖动时用「时长归零」做二分判断），排查完忘了恢复 ——
-// 结果三种折叠块全成了「一帧到位」的硬切（实测展开时高度 0 → 384 只用掉一帧，而且那帧 62.5ms）。
-// 现按用户口径恢复成 120–150ms：小块固定 120；长内容按 2.6px/ms 算、上限 150（384px ≈ 148ms）。
-const FOLD_MS_MIN = 120
-const FOLD_MS_MAX = 150
-const FOLD_PX_PER_MS = 2.6
-const foldMs = (dist: number) => Math.min(FOLD_MS_MAX, Math.max(FOLD_MS_MIN, dist / FOLD_PX_PER_MS))
-const foldTokens = new WeakMap<HTMLElement, number>()
-
-/** 折叠动画：内容高度和滚动补偿在**同一帧**里一起写。
- *  为什么不用 CSS 过渡 + 事后修正：CSS 过渡的当前值在 rAF 里读不到（总是慢一帧），
- *  事后修正会逐帧过冲、欠冲，整个页面的内容跟着上下抖（实测被点元素的 top 会来回摆）。
- *  这里按缓动曲线自己算高度，补偿量正好等于高度增量，两者天然同步。
- *  host = 被点的那个元素（用来把它的位置钉住），body = 内容容器。 */
-function animateFold(host: HTMLElement, body: HTMLElement, open: boolean) {
-  const box = host.closest('.msg-stream') as HTMLElement | null
-  const st0 = box ? box.scrollTop : 0
-  const from = body.getBoundingClientRect().height
-  const to = open ? body.scrollHeight : 0
-  const span = to - from
-  const dur = foldMs(Math.abs(span))
-
-  const token = (foldTokens.get(host) ?? 0) + 1
-  foldTokens.set(host, token)
-  let t0 = -1
-
-  const step = (t: number) => {
-    if (foldTokens.get(host) !== token) return
-    if (t0 < 0) t0 = t
-    const p = dur > 0 ? Math.min(1, Math.max(0, (t - t0) / dur)) : 1
-    if (p < 1) {
-      // 高度取整到整数像素：内容高度和滚动位置的舍入口径不同，
-      // 每帧残留的零点几像素会累积成可见的抖动（实测 0.9px 锯齿）。
-      const h = Math.round(from + span * easeOutCubic(p))
-      body.style.height = `${h}px`
-      // 消息流是反向排列的：内容长高多少，这个块就往上跑多少，等量补回去
-      if (box) box.scrollTop = st0 - (h - from)
-      requestAnimationFrame(step)
-      return
-    }
-    body.style.height = open ? 'auto' : '0px'
-    if (box) box.scrollTop = st0 - (body.getBoundingClientRect().height - from)
-  }
-  requestAnimationFrame(step)
+/** 零 JS 介入的 CSS Grid 折叠容器：利用现代浏览器硬件加速 grid-template-rows: 0fr -> 1fr 过渡。
+ *  无需 JS rAF 轮询测量高度与改写 scrollTop，在正向文档流中展开时绝对静止，零抖动、零位移。 */
+function FoldGrid({ open, children, className }: { open: boolean; children: React.ReactNode; className?: string }) {
+  return (
+    <div
+      className={cn('fold-grid', className)}
+      data-open={open ? 'true' : 'false'}
+      aria-hidden={!open}
+    >
+      <div className="fold-grid-inner">
+        {children}
+      </div>
+    </div>
+  )
 }
 
-/** 思考片段：只占一行——开头那段文字 + 省略号，点开才展开全文。
+/** 思考片段：只占一行——开头那段文字 + 省略号，点开向下方展开全文。
  *  思考动辄几千字，直接铺开会把回答整个淹掉。 */
 function ThinkBlock({ text }: { text: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const hostRef = useRef<HTMLDetailsElement>(null)
-  const bodyRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  useEffect(() => {
-    if (ref.current) ref.current.textContent = text
-  }, [text])
   const flat = text.replace(/\s+/g, ' ').trim()
-  // 空白思考（库里就有上千条 reasoning 字段是空的）不该在界面上留下一个空框
+  // 空白思考不该在界面上留下一个空框
   if (!flat) return null
   const shown = flat.length > 220 ? flat.slice(0, 220) + ' …' : flat
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (hostRef.current && bodyRef.current) animateFold(hostRef.current, bodyRef.current, next)
-  }
+
   return (
-    <details ref={hostRef} open={open} className="group mb-0.5">
-      <summary
-        className="flex cursor-pointer list-none items-baseline gap-2 text-[12.5px] leading-[1.4] transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden"
-        onClick={(e) => {
-          e.preventDefault()
-          e.currentTarget.focus({ preventScroll: true })
-          toggle()
-        }}
+    <div className="group mb-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full cursor-pointer list-none items-baseline gap-2 text-left text-[12.5px] leading-[1.4] transition-colors hover:text-ink-2"
       >
         <Dot className="bg-think" />
         <span className="flex-none font-ui text-[12.5px] tracking-[0.04em] whitespace-nowrap text-muted">
@@ -122,46 +88,43 @@ function ThinkBlock({ text }: { text: string }) {
         >
           {shown}
         </span>
-        <Chevron className={open ? 'rotate-45' : undefined} />
-      </summary>
-      <div ref={bodyRef} className="fold-body">
-        <div
-          ref={ref}
-          className="mt-1 ml-[13px] max-h-[40vh] overflow-y-auto rounded-r-card border border-line border-t-0 border-l-think-line bg-panel px-4 py-3 font-read text-[15px] leading-[1.8] whitespace-pre-wrap text-ink-2"
-        />
-      </div>
-    </details>
+        <Chevron open={open} />
+      </button>
+      <FoldGrid open={open}>
+        <div className="mt-1 ml-[13px] max-h-[40vh] overflow-y-auto rounded-r-card border border-line border-t-0 border-l-2 border-l-accent/40 bg-panel-think/60 px-4 py-3 font-read text-[14.5px] leading-[1.8] whitespace-pre-wrap text-ink-2 shadow-[0_1px_2px_rgba(45,45,42,0.02)]">
+          {text}
+        </div>
+      </FoldGrid>
+    </div>
   )
 }
 
 /** 工具调用：一行摘要（工具名 + 命令/路径），点开看完整参数和结果。 */
 function ToolBlock({ part }: { part: ToolPart }) {
   const [open, setOpen] = useState(false)
-  const hostRef = useRef<HTMLDetailsElement>(null)
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (hostRef.current && bodyRef.current) animateFold(hostRef.current, bodyRef.current, next)
-  }
+  // 区分只读工具 vs 会修改系统/磁盘的变更工具
+  const isMutate = /terminal|bash|write|patch|edit|delete|rm|exec|run/i.test(part.name)
+
   const body = (
     <>
       {part.args ? (
         <>
-          <div className="mb-1 font-ui text-[12.5px] tracking-[0.08em] uppercase text-muted">
+          <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px] tracking-[0.06em] uppercase text-muted">
+            <span className="size-1 rounded-full bg-muted/60" />
             参数
           </div>
-          <pre className="mb-2.5 max-h-[40vh] overflow-auto border-0 bg-transparent p-0 font-mono text-[12.5px] leading-[1.6] whitespace-pre-wrap text-ink-2 [overflow-wrap:anywhere]">
+          <pre className="mb-2.5 max-h-[40vh] overflow-auto rounded-ctl border border-line/60 bg-page/70 p-2.5 font-mono text-[12px] leading-[1.6] whitespace-pre-wrap text-ink-2 [overflow-wrap:anywhere]">
             {part.args}
           </pre>
         </>
       ) : null}
       {part.result ? (
         <>
-          <div className="mb-1 font-ui text-[12.5px] tracking-[0.08em] uppercase text-muted">
+          <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px] tracking-[0.06em] uppercase text-muted">
+            <span className="size-1 rounded-full bg-muted/60" />
             结果
           </div>
-          <pre className="mb-2.5 max-h-[40vh] overflow-auto border-0 bg-transparent p-0 font-mono text-[12.5px] leading-[1.6] whitespace-pre-wrap text-ink-2 [overflow-wrap:anywhere]">
+          <pre className="mb-2.5 max-h-[40vh] overflow-auto rounded-ctl border border-line/60 bg-page/70 p-2.5 font-mono text-[12px] leading-[1.6] whitespace-pre-wrap text-ink-2 [overflow-wrap:anywhere]">
             {part.result}
           </pre>
         </>
@@ -170,42 +133,42 @@ function ToolBlock({ part }: { part: ToolPart }) {
   )
   const summary = (
     <>
-      <span className="flex-none whitespace-nowrap text-ink-2">{part.name}</span>
-      {part.brief ? <span className="min-w-0 flex-1 truncate opacity-80">{part.brief}</span> : null}
+      <span className={cn('flex-none whitespace-nowrap font-medium', isMutate ? 'text-accent-text' : 'text-ink-2')}>
+        {part.name}
+      </span>
+      {part.brief ? <span className="min-w-0 flex-1 truncate opacity-75">{part.brief}</span> : null}
     </>
   )
 
   // 没有参数也没有结果：就是一行摘要，不用折叠
   if (!part.args && !part.result) {
     return (
-      <div className="flex flex-col gap-0.5 pl-6">
-        <div className="flex min-w-0 items-baseline gap-2 whitespace-nowrap font-mono text-[12.5px] leading-[1.4] text-muted">
-          <Dot className="bg-accent-text" />
+      <div className="tool-row flex flex-col gap-0.5">
+        <div className="flex min-w-0 items-center gap-2 whitespace-nowrap font-mono text-[12.5px] leading-[1.4] text-muted">
+          <Dot className={isMutate ? 'bg-accent' : 'bg-muted/70'} />
           {summary}
         </div>
       </div>
     )
   }
   return (
-    <details ref={hostRef} open={open} className="group mb-0.5 pl-6">
-      <summary
-        className="flex cursor-pointer list-none items-baseline gap-2 whitespace-nowrap font-mono text-[12.5px] leading-[1.4] text-muted transition-colors hover:text-ink-2 [&::-webkit-details-marker]:hidden"
-        onClick={(e) => {
-          e.preventDefault()
-          e.currentTarget.focus({ preventScroll: true })
-          toggle()
-        }}
+    <div className="group mb-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full cursor-pointer list-none items-center gap-2 whitespace-nowrap text-left font-mono text-[12.5px] leading-[1.4] text-muted transition-colors hover:text-ink-2"
       >
-        <Dot className="bg-accent-text" />
+        <Dot className={isMutate ? 'bg-accent' : 'bg-muted/70'} />
         {summary}
-        <Chevron className={open ? 'rotate-45' : undefined} />
-      </summary>
-      <div ref={bodyRef} className="fold-body">
-        <div className="mt-1 mb-2 ml-[13px] rounded-card border border-line-strong bg-panel px-3 pt-2.5 pb-0">
+        <Chevron open={open} />
+      </button>
+      <FoldGrid open={open}>
+        <div className="mt-1.5 mb-2 rounded-card border border-line bg-panel-think/50 p-3 shadow-[0_1px_2px_rgba(45,45,42,0.02)]">
           {body}
         </div>
-      </div>
-    </details>
+      </FoldGrid>
+    </div>
   )
 }
 
@@ -285,15 +248,19 @@ function TokRate({ tps, live }: { tps: number | null; live?: boolean }) {
   if (tps == null) return null
   return (
     <span
-      className={live ? 'text-accent-text' : undefined}
+      className={cn(
+        'inline-flex items-center gap-1 font-mono text-[11px] tabular-nums',
+        live ? 'font-medium text-accent-text' : 'text-ink-2/75',
+      )}
       title={TOK_TITLE}
     >
+      <span className={cn('size-1 rounded-full', live ? 'bg-accent animate-ping' : 'bg-current opacity-60')} />
       {`${live ? '≈ ' : ''}${tps < 1 ? '＜1' : Math.round(tps)} tok/s`}
     </span>
   )
 }
 
-/** 一条回复末尾那一行小字：耗时统计 + 这条回复自己的速度。
+/** 一条回复末尾那一行小字：复制/重试微操作 + 耗时统计 + 这条回复自己的速度。
  *  每条消息各自一份，数字也只算自己那一轮（不再有一个「全局最近一条」的显示）。 */
 function Tail({
   elapsed,
@@ -314,19 +281,19 @@ function Tail({
 }) {
   const bits: string[] = []
   if (elapsed) bits.push(fmtDur(elapsed))
-  if (ttft) bits.push(`首字${fmtDur(ttft, 2)}`)
+  if (ttft) bits.push(`首字 ${fmtDur(ttft, 2)}`)
   const tps = liveTps ?? (outTokens && genSeconds ? outTokens / genSeconds : null)
   const [copied, setCopied] = useState(false)
   const timer = useRef<number | null>(null)
   useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current) }, [])
 
   return (
-    <div className="mt-2 flex items-center gap-2 font-mono text-[11px] leading-none tabular-nums text-faint">
+    <div className="mt-2.5 flex flex-wrap items-center gap-2 font-mono text-[11.5px] leading-none tabular-nums text-muted select-none">
       {text ? (
         <button
           type="button"
           aria-label="复制这条回复"
-          title={copied ? '已复制' : '复制这条回复'}
+          title={copied ? '已复制' : '复制这条回复的正文'}
           onClick={() => {
             void copyPlain(text).then((ok) => {
               if (!ok) return
@@ -335,9 +302,15 @@ function Tail({
               timer.current = window.setTimeout(() => setCopied(false), 1500)
             })
           }}
-          className="inline-flex size-6 flex-none cursor-pointer items-center justify-center rounded-ctl text-muted transition-colors hover:bg-raised hover:text-ink-2"
+          className={cn(
+            'inline-flex h-[24px] cursor-pointer items-center gap-1 rounded-md px-1.5 font-ui text-[11.5px] transition-all active:scale-[0.98]',
+            copied
+              ? 'bg-accent/15 text-accent-text font-medium'
+              : 'text-muted hover:bg-raised hover:text-ink',
+          )}
         >
-          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? <Check size={12} strokeWidth={2.5} /> : <Copy size={12} />}
+          <span>{copied ? '已复制' : '复制'}</span>
         </button>
       ) : null}
       {onRegenerate ? (
@@ -346,12 +319,26 @@ function Tail({
           aria-label="重新生成这条回复"
           title="重新生成（把上一条提问原样再发一次）"
           onClick={onRegenerate}
-          className="inline-flex cursor-pointer items-center rounded-ctl px-1.5 py-[3px] transition-colors hover:bg-raised hover:text-ink-2"
+          className="inline-flex h-[24px] cursor-pointer items-center gap-1 rounded-md px-1.5 font-ui text-[11.5px] text-muted transition-all hover:bg-raised hover:text-ink active:scale-[0.98]"
         >
           <RotateCcw size={12} />
+          <span>重试</span>
         </button>
       ) : null}
-      {bits.length > 0 && <span>{bits.join(' · ')}</span>}
+
+      {(text || onRegenerate) && (bits.length > 0 || tps != null) && <span className="text-line-strong">·</span>}
+
+      {bits.length > 0 && (
+        <span className="flex items-center gap-1.5 text-ink-2/75">
+          {bits.map((b, i) => (
+            <span key={i} className="flex items-center gap-1.5">
+              {i > 0 && <span className="text-line-strong">·</span>}
+              {b}
+            </span>
+          ))}
+        </span>
+      )}
+      {bits.length > 0 && tps != null && <span className="text-line-strong">·</span>}
       <TokRate tps={tps} live={liveTps != null} />
     </div>
   )
@@ -361,26 +348,6 @@ function Tail({
  *  哪一串由调用方切好再传进来（见 `intoGroups`）；正文行不进来。 */
 function LeadingChain({ lead }: { lead: Part[] }) {
   const [open, setOpen] = useState(false)
-  // 展开过一次就保持挂载（收起时只是 height: 0），不再条件卸载：
-  // 条件卸载会让浏览器每次开合都重新创建整棵子树并重新布局（实测一次开合约 95–100ms 的主线程长任务）。
-  const [mounted, setMounted] = useState(false)
-  const hostRef = useRef<HTMLButtonElement>(null)
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const toggle = () => {
-    const next = !open
-    setOpen(next)
-    if (!mounted && next) {
-      // 首次展开：内容还没挂到 DOM 上，量不到高度 —— 先把内容挂上，等 React 更新完（下一帧）再动。
-      setMounted(true)
-      requestAnimationFrame(() => {
-        if (hostRef.current && bodyRef.current) animateFold(hostRef.current, bodyRef.current, true)
-      })
-      return
-    }
-    // 之后（含首次之后的收起）与思考块 / 工具块完全一致：同一帧里同步起动画。
-    // 之前这里无条件晚一帧，导致这一行和另外两种折叠块的手感／起播时机不一样。
-    if (hostRef.current && bodyRef.current) animateFold(hostRef.current, bodyRef.current, next)
-  }
   const thinks = lead.filter((p) => p.kind === 'reason').length
   const tools = lead.filter((p) => p.kind === 'tool').length
 
@@ -392,29 +359,24 @@ function LeadingChain({ lead }: { lead: Part[] }) {
   )
 
   return (
-    <>
+    <div className="mb-1">
       <button
-        ref={hostRef}
         type="button"
-        className="fold-toggle mb-0.5 flex w-full cursor-pointer items-baseline gap-2 border-0 bg-transparent p-0 text-left font-ui text-[12.5px] leading-[1.4] text-muted transition-colors hover:text-ink-2"
+        className="fold-toggle inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line-strong/60 bg-panel/80 px-2.5 py-[3px] text-left font-ui text-[12px] leading-none text-muted shadow-[0_1px_2px_rgba(45,45,42,0.02)] transition-all hover:border-accent/40 hover:bg-raised hover:text-ink active:scale-[0.99]"
         aria-expanded={open}
-        onClick={(e) => {
-          e.currentTarget.focus({ preventScroll: true })
-          toggle()
-        }}
+        onClick={() => setOpen((v) => !v)}
       >
-        <Dot className="bg-think" />
+        <Dot className="bg-accent-text" />
         {thinks > 0 && item(true, '思考', thinks, '段')}
         {tools > 0 && item(thinks === 0, '工具', tools, '次')}
-        <Chevron className={open ? 'rotate-45' : undefined} />
+        <Chevron open={open} />
       </button>
-      {mounted && (
-        // 收起态交给 .fold-body（height: 0 + overflow: hidden）：内容留在渲染树里，布局缓存不丢。
-        <div ref={bodyRef} className="fold-body">
+      <FoldGrid open={open}>
+        <div className="pt-1.5 pb-0.5">
           <Parts parts={lead} live={false} />
         </div>
-      )}
-    </>
+      </FoldGrid>
+    </div>
   )
 }
 

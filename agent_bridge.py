@@ -153,6 +153,28 @@ def is_live(session_id: str) -> bool:
     return live_turn(session_id) is not None
 
 
+_cached_tools: list | None = None
+
+
+def get_cached_tools() -> list | None:
+    global _cached_tools
+    if _cached_tools:
+        return _cached_tools
+    with _lock:
+        for t, _ in _recent.values():
+            if t.agent and getattr(t.agent, "tools", None):
+                _cached_tools = t.agent.tools
+                return _cached_tools
+        for t in _turns.values():
+            if t.agent and getattr(t.agent, "tools", None):
+                _cached_tools = t.agent.tools
+                return _cached_tools
+    return None
+
+
+
+
+
 class Turn:
     def __init__(self, session_id: str, text: str, attachments: list[dict] | None = None,
                  persist_text: str | None = None):
@@ -295,12 +317,25 @@ class Turn:
         self.emit(type="status", kind=str(kind), text=str(message or ""))
 
     def _on_approval(self, data: dict) -> None:
-        """agent 线程调这个，然后阻塞等 resolve_gateway_approval。必须立刻返回。"""
+        """agent 线程调这个，然后阻塞等 resolve_gateway_approval。必须立刻返回。
+
+        一并带上 Hermes 自己的审批时限（`approvals.timeout`，默认 300 秒）和绝对到期时刻：
+        浏览器据此倒计时，刷新页面、事件补发之后也算得准。
+        """
+        timeout = 300
+        try:
+            from tools.approval_context import _get_approval_timeout
+
+            timeout = int(_get_approval_timeout())
+        except Exception:
+            pass
         self.emit(
             type="approval",
             request_id=data.get("request_id"),
             command=data.get("command") or "",
             description=data.get("description") or "",
+            timeout_sec=timeout,
+            deadline=time.time() + timeout,
         )
 
     def _on_clarify(self, question=None, choices=None, multi_select=False, questions=None) -> str | None:
@@ -447,6 +482,9 @@ class Turn:
         try:
             agent = AIAgent(**self._agent_kwargs())
             self.agent = agent
+            global _cached_tools
+            if getattr(agent, "tools", None):
+                _cached_tools = agent.tools
             with _lock:
                 _turns[sid] = self
             result = agent.run_conversation(
@@ -473,6 +511,9 @@ class Turn:
                 _val = getattr(agent, _attr, None)
                 if isinstance(_val, int):
                     cache_stats[_key] = _val
+            _model = getattr(agent, "model", "")
+            if _model:
+                cache_stats["model"] = str(_model)
             # 正常跑完才记指标：被打断的那半截不进历史，数据也不该跟着进。
             # 用时和首字都从同一刻（服务端收到这一轮）算起，否则会出现"首字比用时还长"的怪数。
             elapsed = time.time() - self.t_start
@@ -563,6 +604,21 @@ class Turn:
             return bool(agent.steer(text))
         except Exception:
             return False
+
+
+def _warmup_tools():
+    global _cached_tools
+    try:
+        if _cached_tools is None:
+            t = Turn("__warmup__", "")
+            agent = AIAgent(**t._agent_kwargs())
+            if getattr(agent, "tools", None):
+                _cached_tools = agent.tools
+    except Exception:
+        pass
+
+
+threading.Thread(target=_warmup_tools, daemon=True, name="hermes-tools-warmup").start()
 
 
 def start_turn(session_id: str, text: str, attachments: list[dict] | None = None,
