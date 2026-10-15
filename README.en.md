@@ -93,7 +93,7 @@ Prerequisites: a working Hermes Agent, Node 20.9+ (Next.js 16), nginx, and `7z` 
 
 ```bash
 # 1. clone (any path; /opt/hermes-relay used here)
-git clone https://github.com/<your-account>/hermes-relay /opt/hermes-relay && cd /opt/hermes-relay
+git clone https://github.com/wanglixu/hermes-relay.git /opt/hermes-relay && cd /opt/hermes-relay
 
 # 2. generate the self-hosted fonts (font files are not in the repo; ~15 min)
 web/scripts/fetch-fonts.sh

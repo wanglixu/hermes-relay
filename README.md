@@ -93,7 +93,7 @@ nginx 按路径分两路：`/api/` 进后端（8788），页面与前端资源�
 
 ```bash
 # 1. 拿代码（路径随你，示例用 /opt/hermes-relay）
-git clone https://github.com/<你的账号>/hermes-relay /opt/hermes-relay && cd /opt/hermes-relay
+git clone https://github.com/wanglixu/hermes-relay.git /opt/hermes-relay && cd /opt/hermes-relay
 
 # 2. 生成自托管字体（字体文件不进仓库，新环境必须先跑；约 15 分钟）
 web/scripts/fetch-fonts.sh
