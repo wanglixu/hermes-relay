@@ -10,6 +10,12 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 [![Design System](https://img.shields.io/badge/Theme-Warm%20Paper-D97706)](design-system/hermes-relay/MASTER.md)
 
+<br />
+
+<a href="https://wanglixu.github.io/hermes-relay/"><img src="https://img.shields.io/badge/Live_Demo-%E5%9C%A8%E7%BA%BF%E6%BC%94%E7%A4%BA-8c5a3b?style=for-the-badge&logo=githubpages&logoColor=white" alt="Open the live demo" height="36" /></a>
+
+<br />
+
 [中文说明文档](README.md) · [UI Specification](PRODUCT.md) · [Design System](design-system/hermes-relay/MASTER.md) · **[:point_right: Live demo](https://wanglixu.github.io/hermes-relay/)**
 
 <br />
