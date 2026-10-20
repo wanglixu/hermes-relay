@@ -396,7 +396,7 @@ const CRON: CronJob[] = [
   {
     id: 'j1',
     name: '每日备份上传',
-    prompt: '把 /root/backups 同步到对象存储，失败就告诉我。',
+    prompt: '把本机备份目录同步到对象存储，失败就告诉我。',
     schedule: { kind: 'cron', expr: '0 4 * * *', display: '每天 04:00' },
     enabled: true,
     state: 'scheduled',
@@ -457,7 +457,7 @@ const MEMORY_FILES: MemoryFile[] = [
     chars: 1180,
     limit: 5000,
     mtime: today(240),
-    content: `服务器：Ubuntu 24.04（ARM）；网页前端与网关都跑在本机。
+    content: `服务器：Linux，网页前端与网关都跑在本机。
 项目目录：~/workspace（前端在 web/，后端只有三个 Python 文件）。
 部署：systemd 管服务，nginx 做反代。
 
