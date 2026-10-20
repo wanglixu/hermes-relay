@@ -4,7 +4,8 @@ __pycache__/
 
 # 前端依赖与构建产物（static/ 由 web/ 源码构建生成，不进仓库）
 node_modules/
-static/
+# 后端构建产物（仓库根目录那一个）；写成 /static/ 是为了不误伤 docs/_next/static
+/static/
 
 # 运行期产物
 *.log
