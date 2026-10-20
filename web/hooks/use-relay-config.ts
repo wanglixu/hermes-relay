@@ -24,8 +24,11 @@ export function useRelayConfig() {
   const loadSkills = useCallback(() => {
     api
       .skills()
-      .then((r) => setSkills(r.skills))
-      .catch(() => notify('技能清单没取到，输入框的 / 菜单可能是空的'))
+      .then((r) => setSkills(Array.isArray(r?.skills) ? r.skills : []))
+      .catch(() => {
+        setSkills([])
+        notify('技能清单没取到，输入框的 / 菜单可能是空的')
+      })
   }, [])
 
   const loadConfig = useCallback(() => {

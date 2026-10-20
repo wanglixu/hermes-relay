@@ -78,7 +78,8 @@ export function useSessions() {
     // 不会把用户点开的「更多」又缩回 10 条。
     const limit = q ? SEARCH_LIMIT : listLimitRef.current
     try {
-      const { chats: list } = await api.listChats(q || undefined, { limit })
+      const res = await api.listChats(q || undefined, { limit })
+      const list = Array.isArray(res?.chats) ? res.chats : []
       setChats(list)
       // 同步给 ref：下面可能马上要按「是不是今天的会话」决定拉几个回合，
       // 而 setChats 要等下一次渲染才生效，别读到空的列表。
@@ -97,7 +98,8 @@ export function useSessions() {
     setLoadingMoreChats(true)
     const next = listLimitRef.current + LIST_MORE
     try {
-      const { chats: list } = await api.listChats(queryRef.current || undefined, { limit: next })
+      const res = await api.listChats(queryRef.current || undefined, { limit: next })
+      const list = Array.isArray(res?.chats) ? res.chats : []
       setChats(list)
       chatsRef.current = list
       listLimitRef.current = next
@@ -272,7 +274,7 @@ export function useSessions() {
       if (id === current) return
       // 离开时把「点了新对话但一个字没发」的草稿从内存列表里去掉：它本来就没落库
       //（后端懒创建），留在列表里会变成一条悬空的「未命名对话」。
-      setChats((cs) => cs.filter((c) => c.id === id || c.message_count > 0))
+      setChats((cs) => (cs || []).filter((c) => c.id === id || c.message_count > 0))
       viewRef.current = id
       setCurrent(id)
       await loadChat(id).catch(() => setMessages([]))
@@ -293,7 +295,7 @@ export function useSessions() {
         preview: '',
       },
       // 上一个还没发消息的草稿（连点两次「新对话」时）在这里被换掉，不留残影
-      ...c.filter((x) => x.message_count > 0),
+      ...(c || []).filter((x) => x.message_count > 0),
     ])
     viewRef.current = id
     setCurrent(id)

@@ -151,15 +151,15 @@ export function ClarifyCard({
   const [picked, setPicked] = useState<Record<string, string[]>>({}) // qid → 选中的选项（已去掉推荐后缀）
   const [typed, setTyped] = useState<Record<string, string>>({}) // qid → 自己填的字
   // 多选的问题直接把「自己填」的输入框摊开（单选仍然收着，点「其他」才出来）
-  const multiCount = data.questions.filter((q) => q.multi_select).length
-  const allMulti = multiCount === data.questions.length && data.questions.length > 0
+  const multiCount = (data?.questions || []).filter((q) => q.multi_select).length
+  const allMulti = multiCount === (data?.questions || []).length && (data?.questions || []).length > 0
   // 一次只摆一个问题：几道题全铺开会把输入框顶出屏幕，答完这题再出下一题
   const [rawStep, setStep] = useState(0)
   // 同一张卡上题数不会变，但换下一张卡时实例是复用的，旧 step 可能越界 → 夹一下
-  const step = Math.min(rawStep, Math.max(0, data.questions.length - 1))
-  const last = step >= data.questions.length - 1
+  const step = Math.min(rawStep, Math.max(0, (data?.questions || []).length - 1))
+  const last = step >= (data?.questions || []).length - 1
   const [showOther, setShowOther] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(data.questions.filter((q) => q.multi_select).map((q) => [q.qid, true])),
+    Object.fromEntries((data?.questions || []).filter((q) => q.multi_select).map((q) => [q.qid, true])),
   )
 
   const valueOf = useCallback(

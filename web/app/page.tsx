@@ -141,14 +141,14 @@ export default function Page() {
     const list: string[] = []
 
     // 1. 基于最近对话的主题（如果有近期对话）
-    const recent = chats.filter((c) => c.title && !c.title.includes('新对话') && !c.title.includes('未命名'))
+    const recent = (chats || []).filter((c) => c?.title && !c.title.includes('新对话') && !c.title.includes('未命名'))
     if (recent.length > 0) {
       const topTitle = recent[suggestionSeed % recent.length].title
       list.push(`继续探讨「${topTitle.slice(0, 16)}」的相关事项`)
     }
 
     // 2. 基于实际安装的特色技能
-    const usefulSkills = skills.filter((s) => s.name && !s.name.startsWith('_'))
+    const usefulSkills = (skills || []).filter((s) => s?.name && !s.name.startsWith('_'))
     if (usefulSkills.length > 0) {
       const picked = usefulSkills[(suggestionSeed + 1) % usefulSkills.length]
       list.push(`/${picked.name} ${picked.description ? picked.description.slice(0, 20) : '执行该技能'}`)
@@ -459,7 +459,7 @@ export default function Page() {
     }))
     // 压缩记录只显示「窗口里够得着」的那条：比窗口最早那条消息还早的先不显示
     const oldest = messages.length ? (typeof messages[0].ts === 'number' ? messages[0].ts : 0) : Infinity
-    compactions
+    ;(compactions || [])
       .filter((rec) => messages.length > 0 && (typeof rec.at === 'number' ? rec.at : Infinity) >= oldest)
       .forEach((rec, i) => {
         const at = typeof rec.at === 'number' ? rec.at : Number.MAX_SAFE_INTEGER

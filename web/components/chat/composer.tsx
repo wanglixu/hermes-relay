@@ -138,7 +138,7 @@ export function Composer({
       if (fuzzyMatch(q, n)) return 2.8
       return 3
     }
-    const hit = skills.filter((s) => rank(s) < 3)
+    const hit = (skills || []).filter((s) => rank(s) < 3)
     hit.sort(
       (a, b) => rank(a) - rank(b) || (b.last_used || 0) - (a.last_used || 0) || a.name.localeCompare(b.name),
     )
