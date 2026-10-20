@@ -22,20 +22,22 @@
 
 ## 🧪 Try it first: static live demo
 
-Don't want to install anything? **[:point_right: Live demo](https://wanglixu.github.io/hermes-relay/)** is a purely static
-page (`docs/`, served by GitHub Pages) that replays the UI and its interactions with front-end mock data —
-**no backend, no model, no API key**:
+Don't want to install anything? **[:point_right: Live demo](https://wanglixu.github.io/hermes-relay/)** is a **static export
+of this very frontend** (`output: 'export'`) with the data source swapped for an in-browser fake backend —
+**no Python, no model, no API key**. Nothing about rendering changed: folding, Markdown, the settings dialog and the
+four workbench views are the same code that runs in production.
 
-- Session list, search, date grouping, collapsible sub-agents, rename / delete
-- The streamed `reasoning → tool → answer` sequence: live `≈ tok/s`, time-to-first-token, final token rate
-- Approval cards (what the command does / risk / raw command / four choices) and clarify cards
-- Model & reasoning-effort panel, context ring, send / steer / stop, image lightbox, file path preview
+- Chat: session list / search / date grouping / sub-agents / rename & delete; the full
+  `reasoning → tool → approval → answer` stream with live `≈ tok/s` and time-to-first-token
+- Cards: approval (what it does / risk / raw command / four choices) and clarify (choices + recommended + skip)
+- Settings: models & channels, the memory / user-profile / persona files, appearance
+- Workbench: kanban, processes & console, cron jobs, artifacts sandbox
 
-Every reply in the demo is a **pre-recorded script** — hit “重放这轮回复” in the top bar to watch it stream
-character by character. All content is fictional; the real app is driven by backend SSE and consumes the same
-`parts` (reason / tool / text) structure.
+All data is fictional (`demo/demo-mock.ts`): it intercepts `/api/**` and `/local-api/**` with the real payload shapes,
+and `/turn` returns a genuine SSE `ReadableStream` whose event order matches `server.py`. Edit that file and run
+`bash demo/build-demo.sh` to rebuild.
 
-> The demo falls back to system fonts to stay dependency-free; the real app self-hosts its Latin, CJK and mono fonts.
+> The demo ships without the 32 MB mono font (code falls back to the system monospace); Latin and CJK fonts are self-hosted.
 
 ---
 
