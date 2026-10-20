@@ -14,6 +14,7 @@ import {
   Search,
   Timer,
 } from 'lucide-react'
+import { notify } from '@/components/ui/toast'
 import { api, type CronJob } from '@/lib/api'
 import { cn } from '@/lib/cn'
 
@@ -91,7 +92,7 @@ export function CronView() {
         setTimeout(() => setNotice(null), 3000)
         setTimeout(() => loadData(), 1500)
       } else {
-        alert(res.error || '执行失败')
+        notify(res.error || '执行失败')
       }
     } catch (e) {
       console.error(e)

@@ -306,6 +306,12 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }).then((r) => j<{ ok: boolean; model?: RelayModel; error?: string }>(r)),
+  updateModel: (body: { key: string; name: string; model_id: string; context_length?: string }) =>
+    fetch('/api/models/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => j<{ ok: boolean; model?: RelayModel; error?: string }>(r)),
   removeModel: (key: string) =>
     fetch('/api/models/remove', {
       method: 'POST',
@@ -520,6 +526,22 @@ export async function runStream(
   signal: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`/api/chats/${sessionId}/stream?after=${after}`, { signal })
+  await checkStream(res)
+  await pumpSSE(res, onEvent)
+}
+
+/** 重新生成最后一轮：先在后端回滚上一轮问答，再以原提问重新发起推理并读取 SSE 流。 */
+export async function runRegenerate(
+  sessionId: string,
+  onEvent: (ev: TurnEvent) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`/api/chats/${sessionId}/regenerate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+    signal,
+  })
   await checkStream(res)
   await pumpSSE(res, onEvent)
 }

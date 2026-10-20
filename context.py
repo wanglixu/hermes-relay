@@ -58,7 +58,8 @@ def list_skills() -> list[dict]:
         return []
     for path in sorted(SKILLS_DIR.glob("**/SKILL.md")):
         rel = path.relative_to(SKILLS_DIR)
-        if len(rel.parts) > 3:
+        # 排除第三方依赖包或隐藏目录，但允许正常子分类目录（如 mlops/inference/）
+        if "node_modules" in rel.parts or any(p.startswith(".") for p in rel.parts):
             continue
         try:
             head = path.read_text(encoding="utf-8", errors="replace")[:5000]

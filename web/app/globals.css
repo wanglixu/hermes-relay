@@ -170,18 +170,23 @@
    注意别把它挪到内层的宽度容器上：那样渐隐带会跟着内容列一起收窄。 */
 .msg-stream {
   --stream-fade: 28px;
+  /* 上下两条渐隐带只在「那一侧真的还有内容被藏住」时才张开；值由 page.tsx 的
+     syncStreamFade() 写（28px / 0px）。短回复不满一屏时两侧都是 0，
+     正文不会再被啃掉一截（2026-10-19 用户反馈：一小段正文也带渐隐）。 */
+  --fade-top: 0px;
+  --fade-bottom: 0px;
   mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 var(--stream-fade),
-    #000 calc(100% - var(--stream-fade)),
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
     transparent 100%
   );
   -webkit-mask-image: linear-gradient(
     to bottom,
     transparent 0,
-    #000 var(--stream-fade),
-    #000 calc(100% - var(--stream-fade)),
+    #000 var(--fade-top),
+    #000 calc(100% - var(--fade-bottom)),
     transparent 100%
   );
 }
@@ -353,6 +358,25 @@ body::after {
 
   .prose-relay .stream-tail > :last-child {
     margin-bottom: 0;
+  }
+
+  /* 正在流式打字输出时的末尾文字渐隐遮罩（方案 1：mask-image 水平线性透明渐变） */
+  .stream-fade-tail {
+    display: inline;
+    -webkit-mask-image: linear-gradient(
+      to right,
+      rgba(0, 0, 0, 1) 0%,
+      rgba(0, 0, 0, 0.75) 25%,
+      rgba(0, 0, 0, 0.12) 70%,
+      transparent 100%
+    );
+    mask-image: linear-gradient(
+      to right,
+      rgba(0, 0, 0, 1) 0%,
+      rgba(0, 0, 0, 0.75) 25%,
+      rgba(0, 0, 0, 0.12) 70%,
+      transparent 100%
+    );
   }
 
   .prose-relay p,
@@ -720,6 +744,123 @@ button:not(:disabled):active {
     opacity: 0;
     translate: 0 10px;
   }
+}
+
+/* ─────────────────────────────────────────────────────────────
+   用户消息气泡内的排版微调与 Tiptap 输入框样式
+   ───────────────────────────────────────────────────────────── */
+.prose-user > :first-child {
+  margin-top: 0;
+}
+.prose-user > :last-child {
+  margin-bottom: 0;
+}
+.prose-user p {
+  margin-bottom: 8px;
+}
+.prose-user p:last-child {
+  margin-bottom: 0;
+}
+.prose-user blockquote {
+  margin: 0 0 10px;
+  padding: 3px 0 3px 12px;
+  border-left: 2px solid var(--color-accent);
+  color: var(--color-ink-2);
+  font-style: normal;
+  opacity: 0.92;
+  font-size: 0.95em;
+}
+.prose-user blockquote > :last-child {
+  margin-bottom: 0;
+}
+
+.composer-box .tiptap {
+  outline: none;
+  min-height: 26px;
+  max-height: 40dvh;
+  overflow-y: auto;
+  font-family: var(--font-read);
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--color-ink);
+  padding: 7px 2px 3px 2px;
+  flex: 1 1 0%;
+  min-width: 0;
+}
+
+.composer-box .tiptap p {
+  margin: 0;
+}
+
+.composer-box .tiptap p + p {
+  margin-top: 4px;
+}
+
+.composer-box .tiptap ul {
+  list-style: revert;
+  padding-left: 1.25rem;
+  margin: 4px 0;
+}
+
+.composer-box .tiptap ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+  margin: 4px 0;
+}
+
+.composer-box .tiptap li {
+  margin: 2px 0;
+}
+
+.composer-box .tiptap li > p {
+  display: inline;
+}
+
+.composer-box .tiptap table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 13.5px;
+}
+
+.composer-box .tiptap th,
+.composer-box .tiptap td {
+  border: 1px solid var(--color-line);
+  padding: 4px 8px;
+  background: var(--color-raised);
+}
+
+.composer-box .tiptap th {
+  font-weight: 600;
+  background: var(--color-panel);
+}
+
+.composer-box .tiptap pre {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-ctl);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  margin: 4px 0;
+}
+
+.composer-box .tiptap code {
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  background: var(--color-panel);
+  padding: 2px 4px;
+  border-radius: var(--radius-ctl);
+  color: var(--color-accent-text);
+}
+
+.composer-box .tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: var(--color-muted);
+  pointer-events: none;
+  height: 0;
+  font-family: var(--font-ui);
 }
 
 @media (prefers-reduced-motion: reduce) {

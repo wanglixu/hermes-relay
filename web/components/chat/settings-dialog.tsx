@@ -4,6 +4,8 @@ import { AlertTriangle, BookOpen, Check, ChevronRight, Cpu, Loader2, Palette, Pe
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type MemoryFile, type ModelsPayload } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { confirmAction } from '@/components/ui/confirm'
+import { notify } from '@/components/ui/toast'
 import { THEMES, THEME_META, useTheme } from '@/hooks/use-theme'
 
 const ICONS: Record<string, typeof BookOpen> = { memory: BookOpen, user: User, soul: Sparkles }
@@ -116,6 +118,16 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [adding, setAdding] = useState(false)
   const [addError, setAddError] = useState('')
 
+  // 修改自定义模型弹窗状态
+  const [editingModel, setEditingModel] = useState<{
+    key: string
+    name: string
+    model_id: string
+    context_length: string
+  } | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editError, setEditError] = useState('')
+
   const file = files.find((f) => f.key === active)
   const chars = editing ? countChars(active, draft) : (file?.chars ?? 0)
   const over = !!file?.limit && chars > file.limit
@@ -153,9 +165,17 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   }, [active])
 
   const pick = useCallback(
-    (key: string) => {
+    async (key: string) => {
       if (key === active) return
-      if (dirty && !window.confirm('这份文件有没保存的改动，切走就丢了。继续？')) return
+      if (
+        dirty &&
+        !(await confirmAction({
+          title: '这份文件还有没保存的改动',
+          body: '切到别的文件就丢了，确定要切走？',
+          confirmText: '切走',
+        }))
+      )
+        return
       setActive(key)
       setEditing(false)
       setSavedMsg('')
@@ -166,8 +186,18 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   )
 
   const leaveEdit = useCallback(
-    (force = false) => {
-      if (!force && dirty && !window.confirm('有没保存的改动，退出编辑就丢了。继续？')) return false
+    async (force = false) => {
+      if (
+        !force &&
+        dirty &&
+        !(await confirmAction({
+          title: '退出编辑？',
+          body: '有没保存的改动，退出编辑就丢了。',
+          confirmText: '丢掉改动',
+          danger: true,
+        }))
+      )
+        return false
       setEditing(false)
       return true
     },
@@ -218,10 +248,36 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     }
   }, [file, draft, saving])
 
+  const handleSaveEdit = useCallback(async () => {
+    if (!editingModel || editSaving) return
+    if (!editingModel.model_id.trim()) {
+      setEditError('模型真实 ID 不能为空')
+      return
+    }
+    setEditSaving(true)
+    setEditError('')
+    try {
+      const res = await api.updateModel({
+        key: editingModel.key,
+        name: editingModel.name.trim(),
+        model_id: editingModel.model_id.trim(),
+        context_length: editingModel.context_length.trim() || undefined,
+      })
+      if (!res.ok) throw new Error(res.error || '保存修改失败')
+      const updated = await api.models()
+      setModelsPayload(updated)
+      setEditingModel(null)
+    } catch (err) {
+      setEditError(String((err as Error)?.message || err))
+    } finally {
+      setEditSaving(false)
+    }
+  }, [editingModel, editSaving])
+
   // Esc：编辑中就退出编辑，否则关掉弹层；Cmd/Ctrl+S：快捷保存
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => {
+    const onKey = async (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
         if (editing && dirty && !saving) {
@@ -231,19 +287,41 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       }
       if (e.key !== 'Escape') return
       e.stopPropagation()
-      if (editing) {
-        leaveEdit()
+      if (editingModel) {
+        setEditingModel(null)
         return
       }
-      if (dirty && !window.confirm('有没保存的改动，关掉就丢了。继续？')) return
+      if (editing) {
+        void leaveEdit()
+        return
+      }
+      if (
+        dirty &&
+        !(await confirmAction({
+          title: '关掉设置？',
+          body: '有没保存的改动，关掉就丢了。',
+          confirmText: '丢掉改动关掉',
+          danger: true,
+        }))
+      )
+        return
       onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, editing, dirty, saving, save, leaveEdit, onClose])
 
-  const close = useCallback(() => {
-    if (dirty && !window.confirm('有没保存的改动，关掉就丢了。继续？')) return
+  const close = useCallback(async () => {
+    if (
+      dirty &&
+      !(await confirmAction({
+        title: '关掉设置？',
+        body: '有没保存的改动，关掉就丢了。',
+        confirmText: '丢掉改动关掉',
+        danger: true,
+      }))
+    )
+      return
     onClose()
   }, [dirty, onClose])
 
@@ -708,13 +786,21 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                                   title="删除此渠道及全部关联模型"
                                   onClick={async (e) => {
                                     e.stopPropagation()
-                                    if (!window.confirm(`确定要删除渠道「${ch.name || ch.id}」吗？\n该渠道下的全部 ${chModels.length} 个模型都将被彻底移除。`)) return
+                                    if (
+                                      !(await confirmAction({
+                                        title: `删除渠道「${ch.name || ch.id}」？`,
+                                        body: `该渠道下的全部 ${chModels.length} 个模型都将被彻底移除。`,
+                                        confirmText: '删除',
+                                        danger: true,
+                                      }))
+                                    )
+                                      return
                                     try {
                                       await api.removeChannel(ch.id)
                                       const updated = await api.models()
                                       setModelsPayload(updated)
                                     } catch (err) {
-                                      alert(`删除渠道失败：${String((err as Error)?.message || err)}`)
+                                      notify(`删除渠道失败：${String((err as Error)?.message || err)}`)
                                     }
                                   }}
                                   className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-danger/30 bg-danger/5 px-2.5 py-1 text-[11.5px] font-medium text-danger transition-all hover:bg-danger hover:text-white active:scale-[0.98]"
@@ -747,19 +833,45 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                                       )}
                                       <button
                                         type="button"
+                                        title={`修改渠道模型「${m.name || m.key}」`}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          setEditingModel({
+                                            key: m.key,
+                                            name: m.name || '',
+                                            model_id: m.model_id || (m.key.includes('/') ? m.key.split('/')[1] : m.key),
+                                            context_length: m.context_length ? String(m.context_length) : '',
+                                          })
+                                          setEditError('')
+                                        }}
+                                        className="ml-0.5 inline-flex size-4 cursor-pointer items-center justify-center rounded-full text-muted transition-colors hover:bg-accent/20 hover:text-accent-text active:scale-95"
+                                      >
+                                        <Pencil size={10} strokeWidth={2.5} />
+                                      </button>
+                                      <button
+                                        type="button"
                                         title={isCur ? "此模型当前正在使用中，点击移除并恢复为系统默认模型" : `从渠道中移除模型「${m.name || m.key}」`}
                                         onClick={async (e) => {
                                           e.stopPropagation()
-                                          const confirmMsg = isCur
-                                            ? `确定要移除模型「${m.name || m.key}」吗？\n注意：该模型当前正在使用中，移除后将自动恢复为系统默认模型。`
-                                            : `确定要移除模型「${m.name || m.key}」吗？`
-                                          if (!window.confirm(confirmMsg)) return
+                                          if (
+                                            !(await confirmAction({
+                                              title: `移除模型「${m.name || m.key}」？`,
+                                              body: isCur ? '这个模型当前正在使用中，移除后会自动恢复为系统默认模型。' : '',
+                                              confirmText: '移除',
+                                              danger: true,
+                                            }))
+                                          )
+                                            return
                                           try {
-                                            await api.removeModel(m.key)
+                                            const res = await api.removeModel(m.key)
+                                            if (!res.ok) {
+                                              notify('没删掉：这条可能属于某个渠道，去渠道列表里删')
+                                              return
+                                            }
                                             const updated = await api.models()
                                             setModelsPayload(updated)
                                           } catch (err) {
-                                            alert(`移除模型失败：${String((err as Error)?.message || err)}`)
+                                            notify(`移除模型失败：${String((err as Error)?.message || err)}`)
                                           }
                                         }}
                                         className="ml-0.5 inline-flex size-4 cursor-pointer items-center justify-center rounded-full text-muted transition-colors hover:bg-danger/20 hover:text-danger active:scale-95"
@@ -788,52 +900,88 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                                 </span>
                               </div>
                             </div>
-                            <div className="flex flex-wrap gap-1.5">
+                            <div className="space-y-2">
                               {standaloneCustomModels.map((m) => {
                                 const isCur = m.key === modelsPayload?.current?.key
                                 return (
-                                  <span
+                                  <div
                                     key={m.key}
                                     className={cn(
-                                      'group/model inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[12px] transition-colors',
+                                      'flex items-center justify-between gap-3 rounded-md border p-2.5 transition-colors',
                                       isCur
-                                        ? 'border-accent bg-accent/10 font-medium text-accent-text'
-                                        : 'border-line/80 bg-panel/70 text-ink',
+                                        ? 'border-accent/40 bg-accent/[0.04]'
+                                        : 'border-line/70 bg-panel/50 hover:bg-panel',
                                     )}
                                   >
-                                    <span>{m.name || m.key}</span>
-                                    {m.base_url && (
-                                      <span className="font-mono text-[10.5px] opacity-60">
-                                        ({hostOf(m.base_url)})
-                                      </span>
-                                    )}
-                                    {isCur && (
-                                      <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10px] font-medium text-accent-text">
-                                        在用
-                                      </span>
-                                    )}
-                                    <button
-                                      type="button"
-                                      title={isCur ? "此模型当前正在使用中，点击移除并恢复为系统默认模型" : `移除模型「${m.name || m.key}」`}
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        const confirmMsg = isCur
-                                          ? `确定要移除模型「${m.name || m.key}」吗？\n注意：该模型当前会话正在使用，移除后将自动恢复为系统默认模型。`
-                                          : `确定要移除模型「${m.name || m.key}」吗？`
-                                        if (!window.confirm(confirmMsg)) return
-                                        try {
-                                          await api.removeModel(m.key)
-                                          const updated = await api.models()
-                                          setModelsPayload(updated)
-                                        } catch (err) {
-                                          alert(`移除模型失败：${String((err as Error)?.message || err)}`)
-                                        }
-                                      }}
-                                      className="ml-1 inline-flex size-4 cursor-pointer items-center justify-center rounded-full text-muted transition-colors hover:bg-danger/20 hover:text-danger active:scale-95"
-                                    >
-                                      <X size={12} strokeWidth={2.5} />
-                                    </button>
-                                  </span>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className="font-medium text-[13px] text-ink truncate">{m.name || m.key}</span>
+                                        {isCur && (
+                                          <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10px] font-medium text-accent-text shrink-0">
+                                            在用
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-muted">
+                                        <span className="text-ink-2">ID: {m.model_id || (m.key.startsWith('custom:') ? m.key.split('custom:')[1] : m.key)}</span>
+                                        {m.context_length ? (
+                                          <span>· 窗口: {m.context_length >= 1000 ? `${Math.round(m.context_length / 1000)}k` : m.context_length}</span>
+                                        ) : null}
+                                        {m.base_url ? <span>· {hostOf(m.base_url)}</span> : null}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        title={`修改模型「${m.name || m.key}」`}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          setEditingModel({
+                                            key: m.key,
+                                            name: m.name || '',
+                                            model_id: m.model_id || (m.key.startsWith('custom:') ? m.key.split('custom:')[1] : m.key),
+                                            context_length: m.context_length ? String(m.context_length) : '',
+                                          })
+                                          setEditError('')
+                                        }}
+                                        className="inline-flex cursor-pointer items-center gap-1 rounded border border-line bg-page px-2.5 py-1 text-[11.5px] font-medium text-ink transition-colors hover:border-accent hover:text-accent-text active:scale-95"
+                                      >
+                                        <Pencil size={11} strokeWidth={2} />
+                                        <span>修改</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        title={isCur ? "此模型当前正在使用中，点击移除并恢复为系统默认模型" : `移除模型「${m.name || m.key}」`}
+                                        onClick={async (e) => {
+                                          e.stopPropagation()
+                                          if (
+                                            !(await confirmAction({
+                                              title: `移除模型「${m.name || m.key}」？`,
+                                              body: isCur ? '这个模型当前正在使用，移除后会自动恢复为系统默认模型。' : '',
+                                              confirmText: '移除',
+                                              danger: true,
+                                            }))
+                                          )
+                                            return
+                                          try {
+                                            const res = await api.removeModel(m.key)
+                                            if (!res.ok) {
+                                              notify('没删掉：这条可能属于某个渠道，去渠道列表里删')
+                                              return
+                                            }
+                                            const updated = await api.models()
+                                            setModelsPayload(updated)
+                                          } catch (err) {
+                                            notify(`移除模型失败：${String((err as Error)?.message || err)}`)
+                                          }
+                                        }}
+                                        className="inline-flex cursor-pointer items-center gap-1 rounded border border-danger/30 bg-danger/5 px-2.5 py-1 text-[11.5px] font-medium text-danger transition-colors hover:bg-danger hover:text-white active:scale-95"
+                                      >
+                                        <Trash2 size={11} strokeWidth={2} />
+                                        <span>移除</span>
+                                      </button>
+                                    </div>
+                                  </div>
                                 )
                               })}
                             </div>
@@ -967,7 +1115,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                       'flex-none font-mono text-[11.5px] tabular-nums',
                       over ? 'text-danger-text' : 'text-muted',
                     )}
-                    title={`按 Hermes 的口径数出来是 ${fmtK(chars)} 字符，上限 ${fmtK(file.limit)}。超了 agent 就没法再往里追加新内容。`}
+                    title={`${chars.toLocaleString()} / ${file.limit.toLocaleString()} 字符`}
                   >
                     {fmtK(chars)} / {fmtK(file.limit)}
                   </span>
@@ -1087,6 +1235,103 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           )}
         </div>
       </div>
+
+      {/* 修改自定义模型弹窗 */}
+      {editingModel && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4 backdrop-blur-[1px] animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !editSaving) setEditingModel(null)
+          }}
+        >
+          <div
+            className="w-full max-w-[420px] rounded-lg border border-line bg-page p-5 shadow-xl animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3.5 flex items-center justify-between border-b border-line/60 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Pencil size={15} className="text-accent-text" />
+                <h3 className="font-title text-[14.5px] font-semibold text-ink">修改自定义模型</h3>
+              </div>
+              <button
+                type="button"
+                disabled={editSaving}
+                onClick={() => setEditingModel(null)}
+                className="cursor-pointer text-muted hover:text-ink disabled:opacity-40"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-[12.5px]">
+              <div>
+                <label className="mb-1 block font-medium text-ink-2">模型显示名称（可选）</label>
+                <input
+                  type="text"
+                  placeholder="例如：Claude 3.7 Sonnet"
+                  value={editingModel.name}
+                  onChange={(e) => setEditingModel({ ...editingModel, name: e.target.value })}
+                  className="w-full rounded-md border border-line bg-panel px-3 py-1.5 font-ui text-[13px] text-ink outline-none transition-colors focus:border-accent"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block font-medium text-ink-2">模型真实 ID（必填）</label>
+                <input
+                  type="text"
+                  placeholder="例如：claude-3-7-sonnet-20250219"
+                  value={editingModel.model_id}
+                  onChange={(e) => setEditingModel({ ...editingModel, model_id: e.target.value })}
+                  className="w-full rounded-md border border-line bg-panel px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none transition-colors focus:border-accent"
+                />
+                <span className="mt-1 block text-[11px] text-muted">
+                  请求上游 API 时使用的真实 model 参数值
+                </span>
+              </div>
+
+              <div>
+                <label className="mb-1 block font-medium text-ink-2">上下文窗口（可选，Token 数）</label>
+                <input
+                  type="text"
+                  placeholder="例如：128000 或 200000"
+                  value={editingModel.context_length}
+                  onChange={(e) => setEditingModel({ ...editingModel, context_length: e.target.value })}
+                  className="w-full rounded-md border border-line bg-panel px-3 py-1.5 font-mono text-[12.5px] text-ink outline-none transition-colors focus:border-accent"
+                />
+                <span className="mt-1 block text-[11px] text-muted">
+                  留空将尝试向接口或公开目录自动探查；填数字则强制钉死此大小
+                </span>
+              </div>
+
+              {editError && (
+                <div className="rounded border border-danger/30 bg-danger/5 px-2.5 py-1.5 text-[12px] text-danger">
+                  {editError}
+                </div>
+              )}
+
+              <div className="mt-4 flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={editSaving}
+                  onClick={() => setEditingModel(null)}
+                  className="cursor-pointer rounded-md px-3 py-1.5 text-[12px] font-medium text-muted transition-colors hover:bg-raised disabled:opacity-50"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  disabled={editSaving}
+                  onClick={handleSaveEdit}
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-accent px-4 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-text disabled:opacity-50"
+                >
+                  {editSaving ? <Loader2 size={13} className="animate-spin" /> : null}
+                  <span>保存修改</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

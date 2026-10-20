@@ -1,7 +1,7 @@
 'use client'
 
 import { memo, useEffect, useRef, useState } from 'react'
-import { Check, Copy, RotateCcw } from 'lucide-react'
+import { Check, Copy, RotateCcw, ExternalLink } from 'lucide-react'
 import type { Msg, Part, ToolPart } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { Markdown } from './markdown-view'
@@ -236,13 +236,6 @@ async function copyPlain(text: string): Promise<boolean> {
   }
 }
 
-/** 生成速度这一格的说明：鼠标停上去才展开，措辞跟后端口径对齐。 */
-const TOK_TITLE =
-  '生成速度（tok/s）= 这条回复真实输出的 token ÷ 真正在收字的秒数' +
-  '（首字之前的等待、跑工具的时间都不算）。生成中的 ≈ 是在数收到的流式片段（1 个片段约 1 个 token，' +
-  '比定稿值略低一点），答完换成这一轮的真实值；' +
-  '改动之前跑的旧回合没记生成时长，就不显示这个数。'
-
 /** 一条回复自己的速度。tps 为 null 就什么都不渲染（老回合没埋点）。 */
 function TokRate({ tps, live }: { tps: number | null; live?: boolean }) {
   if (tps == null) return null
@@ -252,7 +245,6 @@ function TokRate({ tps, live }: { tps: number | null; live?: boolean }) {
         'inline-flex items-center gap-1 font-mono text-[11px] tabular-nums',
         live ? 'font-medium text-accent-text' : 'text-ink-2/75',
       )}
-      title={TOK_TITLE}
     >
       <span className={cn('size-1 rounded-full', live ? 'bg-accent animate-ping' : 'bg-current opacity-60')} />
       {`${live ? '≈ ' : ''}${tps < 1 ? '＜1' : Math.round(tps)} tok/s`}
@@ -292,8 +284,8 @@ function Tail({
       {text ? (
         <button
           type="button"
-          aria-label="复制这条回复"
-          title={copied ? '已复制' : '复制这条回复的正文'}
+          aria-label="复制"
+          title={copied ? '已复制' : '复制'}
           onClick={() => {
             void copyPlain(text).then((ok) => {
               if (!ok) return
@@ -316,13 +308,13 @@ function Tail({
       {onRegenerate ? (
         <button
           type="button"
-          aria-label="重新生成这条回复"
-          title="重新生成（把上一条提问原样再发一次）"
+          aria-label="重新生成"
+          title="重新生成"
           onClick={onRegenerate}
           className="inline-flex h-[24px] cursor-pointer items-center gap-1 rounded-md px-1.5 font-ui text-[11.5px] text-muted transition-all hover:bg-raised hover:text-ink active:scale-[0.98]"
         >
           <RotateCcw size={12} />
-          <span>重试</span>
+          <span>重新生成</span>
         </button>
       ) : null}
 
@@ -362,13 +354,15 @@ function LeadingChain({ lead }: { lead: Part[] }) {
     <div className="mb-1">
       <button
         type="button"
-        className="fold-toggle inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-line-strong/60 bg-panel/80 px-2.5 py-[3px] text-left font-ui text-[12px] leading-none text-muted shadow-[0_1px_2px_rgba(45,45,42,0.02)] transition-all hover:border-accent/40 hover:bg-raised hover:text-ink active:scale-[0.99]"
+        className="fold-toggle inline-flex h-[24px] cursor-pointer items-center gap-1.5 rounded-full border border-line-strong/60 bg-panel/80 px-2.5 text-left font-ui text-[12px] text-muted shadow-[0_1px_2px_rgba(45,45,42,0.02)] transition-all hover:border-accent/40 hover:bg-raised hover:text-ink active:scale-[0.99]"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
         <Dot className="bg-accent-text" />
-        {thinks > 0 && item(true, '思考', thinks, '段')}
-        {tools > 0 && item(thinks === 0, '工具', tools, '次')}
+        <span className="inline-flex items-center gap-0.5 translate-y-[0.5px]">
+          {thinks > 0 && item(true, '思考', thinks, '段')}
+          {tools > 0 && item(thinks === 0, '工具', tools, '次')}
+        </span>
         <Chevron open={open} />
       </button>
       <FoldGrid open={open}>
@@ -400,6 +394,112 @@ function plainText(parts: Part[]): string {
     .trim()
 }
 
+/** 回复里提到的 /apages/xxx.html：在气泡内给一行可展开的嵌入式预览。
+ *  同源（/apages/），所以能直接读 iframe 文档高度做自适应；
+ *  内容都是本机 am CLI 生成的静态页，不加 sandbox 限制（加了就读不到高度）。 */
+const APAGES_RE = /\/apages\/[A-Za-z0-9._\-\u4e00-\u9fa5]+\.html/g
+
+function apagesLinks(parts: Part[]): string[] {
+  const out: string[] = []
+  for (const p of parts) {
+    if (p.kind !== 'text' || !p.text) continue
+    const hits = p.text.match(APAGES_RE) || []
+    for (const h of hits) if (!out.includes(h)) out.push(h)
+  }
+  return out
+}
+
+function PageEmbed({ src }: { src: string }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLIFrameElement | null>(null)
+  const [h, setH] = useState(560)
+
+  useEffect(() => {
+    if (!open) return
+    const f = ref.current
+    if (!f) return
+    let ro: ResizeObserver | null = null
+    const fit = () => {
+      try {
+        const d = f.contentDocument
+        if (!d) return
+        // 嵌在气泡里时去掉页面自带的工具栏（主题切换 / 复制源稿那一行）：窄宽度下它会换行压住标题。
+        // 页面与本站同源，能直接注入样式；要看完整版点行尾的外链。
+        if (d.head && !d.getElementById('relay-embed-style')) {
+          const s = d.createElement('style')
+          s.id = 'relay-embed-style'
+          s.textContent =
+            '.am-toolbar,.am-head-meta{display:none!important}.am-head{padding-top:10px!important}.am-page{padding-top:6px!important}'
+          d.head.appendChild(s)
+        }
+        const hh = Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0)
+        if (hh > 80) setH(Math.min(hh + 2, 2600))
+      } catch {
+        // 跨域拿不到高度时保持默认值
+      }
+    }
+    f.addEventListener('load', fit)
+    try {
+      const d = f.contentDocument
+      if (d && d.documentElement) {
+        ro = new ResizeObserver(fit)
+        ro.observe(d.documentElement)
+      }
+    } catch {
+      /* 同源才有 ResizeObserver */
+    }
+    return () => {
+      f.removeEventListener('load', fit)
+      ro?.disconnect()
+    }
+  }, [open])
+
+  const name = decodeURIComponent((src.split('/').pop() || '页面').replace(/\.html$/, ''))
+
+  return (
+    <div className="mt-2 mb-1">
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          data-apages={src}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 text-left text-[12.5px] leading-[1.4] text-muted transition-colors hover:text-ink-2"
+        >
+          <Dot className="bg-accent-text" />
+          <span className="flex-none font-ui tracking-[0.04em]">一页图解</span>
+          <span className="min-w-0 flex-1 truncate opacity-75">{name}</span>
+          <Chevron open={open} />
+        </button>
+        <a
+          href={src}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="新标签打开完整版"
+          title="新标签打开完整版"
+          className="flex size-6 flex-none items-center justify-center rounded-ctl text-muted transition-colors hover:bg-raised hover:text-ink-2"
+        >
+          <ExternalLink size={13} />
+        </a>
+      </div>
+      <FoldGrid open={open}>
+        <div className="mt-1.5 mb-2 overflow-hidden rounded-card border border-line bg-panel shadow-[0_1px_2px_rgba(45,45,42,0.02)]">
+          {open && (
+            <iframe
+              ref={ref}
+              src={src}
+              title={name}
+              loading="lazy"
+              style={{ height: h }}
+              className="block w-full border-0"
+            />
+          )}
+        </div>
+      </FoldGrid>
+    </div>
+  )
+}
+
 /** 历史里的助手消息 */
 export const AssistantMessage = memo(function AssistantMessage({
   msg,
@@ -421,17 +521,32 @@ export const AssistantMessage = memo(function AssistantMessage({
             <Parts key={i} parts={g} live={false} />
           ),
         )}
+        {apagesLinks(parts).map((src) => (
+          <PageEmbed key={src} src={src} />
+        ))}
         {msg.stopped ? (
           <div className="mt-2 flex items-center gap-2 font-mono text-[11px] leading-none tabular-nums text-faint">
             {plain ? (
               <button
                 type="button"
-                aria-label="复制这条回复"
-                title="复制这条回复"
+                aria-label="复制"
+                title="复制"
                 onClick={() => void copyPlain(plain)}
                 className="inline-flex size-6 flex-none cursor-pointer items-center justify-center rounded-ctl text-muted transition-colors hover:bg-raised hover:text-ink-2"
               >
                 <Copy size={14} />
+              </button>
+            ) : null}
+            {onRegenerate ? (
+              <button
+                type="button"
+                aria-label="重新生成"
+                title="重新生成"
+                onClick={onRegenerate}
+                className="inline-flex h-[24px] cursor-pointer items-center gap-1 rounded-md px-1.5 font-ui text-[11.5px] text-muted transition-all hover:bg-raised hover:text-ink active:scale-[0.98]"
+              >
+                <RotateCcw size={12} />
+                <span>重新生成</span>
               </button>
             ) : null}
             <span>已被你停止（这半截没有存进历史）</span>
@@ -467,6 +582,24 @@ export function stripAttachmentMarks(text: string): string {
  *  `/技能名` 发出去时会在正文前面套一层给模型看的信封（[USER OVERRIDE] + [FORCED SKILL CONTEXT]），
  *  用户原话完整留在末尾。界面上该显示的是用户自己打的那句，所以显示前把信封剥掉。 */
 export function stripSkillEnvelope(text: string): string {
+  // 1. 匹配 Hermes 官方单技能与多技能/Bundle 信封
+  const officialSingle = /\[IMPORTANT: The user has invoked the "([^"]+)" skill[\s\S]*?The user has provided the following instruction alongside the skill invocation:\s*/
+  if (officialSingle.test(text)) {
+    const m = text.match(/\[IMPORTANT: The user has invoked the "([^"]+)" skill/)
+    const name = m ? m[1] : ''
+    const instruction = text.replace(officialSingle, '').replace(/\n\n\[Runtime note:[\s\S]*$/, '').trim()
+    return instruction ? `/${name} ${instruction}` : `/${name}`
+  }
+  const officialMulti = /\[IMPORTANT: The user has invoked the [^,]+ skill bundle[\s\S]*?\nUser instruction:\s*([\s\S]*?)\n\n\[Loaded as part of the /
+  const multiMatch = text.match(officialMulti)
+  if (multiMatch) {
+    const instruction = multiMatch[1].trim()
+    const nameMatch = text.match(/Skills loaded: ([^\n]+)/)
+    const skills = nameMatch ? nameMatch[1].split(',').map(s => `/${s.trim()}`).join(' ') : ''
+    return instruction ? `${skills} ${instruction}` : skills
+  }
+
+  // 2. 兼容历史上的 relay 自定义信封
   return text
     .replace(/^\[USER OVERRIDE\][^\n]*\n*/, '')
     .replace(/\[FORCED SKILL CONTEXT:[^\]]+\][\s\S]*?\[\/FORCED SKILL CONTEXT\]\s*/g, '')
@@ -532,7 +665,9 @@ export const UserMessage = memo(function UserMessage({
               </div>
             </>
           ) : (
-            <div className="whitespace-pre-wrap">{text}</div>
+            <div className="prose-relay prose-user">
+              <Markdown text={text} live={false} />
+            </div>
           )
         ) : null}
       </div>

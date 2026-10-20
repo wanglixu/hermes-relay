@@ -41,6 +41,16 @@ MAX_JSON_BODY = 1 * 1024 * 1024      # JSON 接口上限，正常请求都是几
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._\u4e00-\u9fff-]")
 
 
+def _inside(root: Path, target: Path) -> bool:
+    """target 是否真的在 root 里面。用 relative_to 而不是字符串前缀比对：
+    前缀比对会把 /a/b 和 /a/bc 判成同一个目录。root 与 target 都要是 resolve 过的。"""
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 class _HttpError(Exception):
     """带状态码的请求错误：在 do_* 里统一翻译成 JSON 响应。"""
 
@@ -322,6 +332,21 @@ class Handler(BaseHTTPRequestHandler):
                     # 校验失败也用 200 + ok:false，前端统一按「结果」处理，不用解析 HTTP 错误体
                     return _json(self, {"ok": False, "error": str(exc)})
                 return _json(self, {"ok": True, "model": item})
+            if parts[1:] == ["models", "update"]:
+                body = self._json_body()
+                key = (body.get("key") or "").strip()
+                if not key.startswith("custom:"):
+                    return _json(self, {"ok": False, "error": "只能修改页面上自定义的模型"})
+                try:
+                    item = models.update_custom(
+                        key=key,
+                        name=(body.get("name") or "").strip(),
+                        model_id=(body.get("model_id") or "").strip(),
+                        context_length=body.get("context_length"),
+                    )
+                except ValueError as exc:
+                    return _json(self, {"ok": False, "error": str(exc)})
+                return _json(self, {"ok": True, "model": item})
             if parts[1:] == ["models", "remove"]:
                 body = self._json_body()
                 key = (body.get("key") or "").strip()
@@ -361,6 +386,8 @@ class Handler(BaseHTTPRequestHandler):
                 return _json(self, {"id": sid}, 201)
             if len(parts) == 4 and parts[1] == "chats" and parts[3] == "turn":
                 return self._turn(parts[2])
+            if len(parts) == 4 and parts[1] == "chats" and parts[3] == "regenerate":
+                return self._regenerate(parts[2])
             if len(parts) == 4 and parts[1] == "chats" and parts[3] == "interrupt":
                 turn = agent_bridge.live_turn(parts[2])
                 return _json(self, {"interrupted": bool(turn and turn.interrupt())})
@@ -547,33 +574,44 @@ class Handler(BaseHTTPRequestHandler):
         if compress.is_busy():
             return _json(self, {"error": "上下文正在压缩，这条消息稍后会自动发出"}, 409)
         # 输入框里用 `/技能名` 开头 = 点名要用这个技能。
-        # 照 hermes-webui 的做法（static/messages.js 的 _forcedSkillDirectivePending）：
-        # 技能内容套一层信封拼在正文前面，**用户原话完整留在末尾**；界面显示时由前端把信封剥掉
-        # （static/sessions.js 的 _stripForcedSkillEnvelope），所以历史里看着还是你打的那句话。
-        # 小技能整段贴（本机中位数 7KB），大技能（只有 6 个超 20KB）贴不动，退回提示并要求先读。
+        # 对齐 Hermes 官方标准（agent.skill_commands）：
+        # 调用 build_skill_invocation_message / build_stacked_skill_invocation_message 构建标准信封。
+        # 优势：
+        # 1. 自动触发 bump_use() 更新技能使用台账（~/.hermes/skills/.usage.json），前端技能菜单可正常看到"最近使用"；
+        # 2. 消息格式与 CLI/Telegram 官方格式完全一致，历史展示能被 describe_skill_invocation() 完美还原为 clean 命令；
+        # 3. 完美支持堆叠技能（如 `/i-have-adhd /ponytail 任务说明`）。
         agent_text = text
-        m = re.match(r"^/([A-Za-z0-9_.\-]{2,64})(?:[\s\u3000]+(.*))?$", text, re.S)
-        if m:
-            sk = chat_context.skill_by_name(m.group(1))
-            if sk:
-                directive = (
-                    f"[USER OVERRIDE] You MUST follow the skill '{sk['name']}' content "
-                    f"provided below before responding to the next message."
+        persist_text = text
+        if text.startswith("/"):
+            try:
+                from agent.skill_commands import (
+                    build_skill_invocation_message,
+                    build_stacked_skill_invocation_message,
+                    resolve_skill_command_key,
+                    split_stacked_skill_commands,
                 )
-                body = chat_context.skill_body(sk)
-                if body:
-                    agent_text = (
-                        f"{directive}\n\n"
-                        f"[FORCED SKILL CONTEXT: {sk['name']}]\n{body}\n[/FORCED SKILL CONTEXT]\n\n"
-                        f"{text}"
-                    )
-                else:
-                    agent_text = (
-                        f"{directive}\n\n"
-                        f"[FORCED SKILL CONTEXT: {sk['name']}]\n"
-                        f"(这个技能的说明太长，没有直接贴出；动手前必须先用 skill_view 读 {sk['path']})\n"
-                        f"[/FORCED SKILL CONTEXT]\n\n{text}"
-                    )
+                t_clean = text.strip()
+                token, tail = (t_clean.split(None, 1) + [""])[:2]
+                cmd_key = resolve_skill_command_key(token.lstrip("/"))
+                if cmd_key:
+                    extra_keys, instruction = split_stacked_skill_commands(tail)
+                    if extra_keys:
+                        stacked = build_stacked_skill_invocation_message(
+                            [cmd_key, *extra_keys], instruction, task_id=session_id
+                        )
+                        if stacked:
+                            agent_text = stacked[0]
+                            persist_text = f"{cmd_key} {' '.join(extra_keys)} {instruction}".strip()
+                    else:
+                        single = build_skill_invocation_message(
+                            cmd_key, user_instruction=instruction, task_id=session_id
+                        )
+                        if single:
+                            agent_text = single
+                            persist_text = f"{cmd_key} {instruction}".strip()
+            except Exception:
+                traceback.print_exc()
+
         if not sessions.get_chat(session_id):
             return _json(self, {"error": "session not found"}, 404)
         if attachments:
@@ -591,7 +629,94 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 traceback.print_exc()
         try:
-            turn = agent_bridge.start_turn(session_id, agent_text, attachments, persist_text=text)
+            turn = agent_bridge.start_turn(session_id, agent_text, attachments, persist_text=persist_text)
+        except RuntimeError as exc:
+            return _json(self, {"error": str(exc)}, 409)
+        self._sse_pump(turn, 0)
+
+    def _regenerate(self, session_id: str):
+        """重新生成最后一轮：利用 Hermes 原生 rewind_to_message 撤回上一轮，用原提问直接重跑。"""
+        if not sessions.get_chat(session_id):
+            return _json(self, {"error": "session not found"}, 404)
+        if compress.is_busy():
+            return _json(self, {"error": "上下文正在压缩，请等它压完"}, 409)
+        if agent_bridge.live_turn(session_id):
+            return _json(self, {"error": "这一轮还在跑，等它结束再重试"}, 409)
+
+        sdb = sessions.db()
+        rows = sdb.get_messages(session_id)
+        user_rows = [r for r in rows if r.get("role") == "user" and r.get("active", 1)]
+        if not user_rows:
+            return _json(self, {"error": "没有可重新生成的提问"}, 400)
+
+        last_user = user_rows[-1]
+        user_id = last_user.get("id")
+        user_ts = float(last_user.get("timestamp") or 0)
+
+        uploads = sessions._upload_index(session_id)
+        files = sessions._files_for(uploads, user_ts)
+        attachments = []
+        for f in files:
+            p = sessions.UPLOAD_DIR / session_id / f
+            mime = mimetypes.guess_type(f)[0] or "image/png"
+            attachments.append({"path": str(p), "name": f, "mime": mime})
+
+        # 回滚上一轮（将该条用户提问以及后续所有回答与工具调用标记为 active=0）
+        rewind_res = sdb.rewind_to_message(session_id, user_id)
+        sessions.clear_partial(session_id)
+
+        target_msg = rewind_res.get("target_message") or {}
+        raw_content = target_msg.get("content") or ""
+        text = sessions._strip_scaffold_envelope(sessions._flatten(raw_content))
+        if not text:
+            text = sessions._flatten(raw_content)
+
+        agent_text = text
+        persist_text = text
+        if text.startswith("/"):
+            try:
+                from agent.skill_commands import (
+                    build_skill_invocation_message,
+                    build_stacked_skill_invocation_message,
+                    resolve_skill_command_key,
+                    split_stacked_skill_commands,
+                )
+                t_clean = text.strip()
+                token, tail = (t_clean.split(None, 1) + [""])[:2]
+                cmd_key = resolve_skill_command_key(token.lstrip("/"))
+                if cmd_key:
+                    extra_keys, instruction = split_stacked_skill_commands(tail)
+                    if extra_keys:
+                        stacked = build_stacked_skill_invocation_message(
+                            [cmd_key, *extra_keys], instruction, task_id=session_id
+                        )
+                        if stacked:
+                            agent_text = stacked[0]
+                            persist_text = f"{cmd_key} {' '.join(extra_keys)} {instruction}".strip()
+                    else:
+                        single = build_skill_invocation_message(
+                            cmd_key, user_instruction=instruction, task_id=session_id
+                        )
+                        if single:
+                            agent_text = single
+                            persist_text = f"{cmd_key} {instruction}".strip()
+            except Exception:
+                traceback.print_exc()
+
+        if attachments:
+            try:
+                pics = [
+                    Path(a.get("path", "")).name
+                    for a in attachments
+                    if a.get("path") and str(a.get("mime") or "").startswith("image/")
+                ]
+                if pics:
+                    sessions.record_uploads(session_id, pics)
+            except Exception:
+                traceback.print_exc()
+
+        try:
+            turn = agent_bridge.start_turn(session_id, agent_text, attachments, persist_text=persist_text)
         except RuntimeError as exc:
             return _json(self, {"error": str(exc)}, 409)
         self._sse_pump(turn, 0)
@@ -606,10 +731,12 @@ class Handler(BaseHTTPRequestHandler):
         sid = SAFE_NAME.sub("", session_id)[:64]
         safe = SAFE_NAME.sub("_", Path(name).name)[:120]
         root = UPLOAD_DIR.resolve()
+        # 越界判断用 relative_to（和 _safe_attachments 一致），别用字符串前缀：
+        # startswith 会把 /a/b 和 /a/bc 当成同一个目录。
         target = (root / sid / safe).resolve()
-        if not str(target).startswith(str(root)) or not target.is_file():
+        if not _inside(root, target) or not target.is_file():
             target = (root / "draft" / safe).resolve()
-        if not str(target).startswith(str(root)) or not target.is_file():
+        if not _inside(root, target) or not target.is_file():
             return _json(self, {"error": "not found"}, 404)
         ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if not ctype.startswith("image/"):
@@ -669,6 +796,13 @@ class Server(ThreadingHTTPServer):
 
 
 def main():
+    # 启动时对账一次 metrics.json：删会话只清库和上传目录，这份 json 会一直留孤儿条目。
+    try:
+        pruned = sessions.prune_metrics()
+        if pruned["removed"]:
+            print(f"[relay] metrics.json 清掉 {pruned['removed']} 条已删会话的记录", flush=True)
+    except Exception as exc:  # 清理失败不影响服务起来
+        sys.stderr.write(f"[relay] metrics 对账失败：{exc}\n")
     srv = Server((HOST, PORT), Handler)
     print(f"hermes-relay 起来了：http://{HOST}:{PORT}   (pid {os.getpid()})", flush=True)
     try:

@@ -1,8 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { notify } from '@/components/ui/toast'
 import {
   api,
+  runRegenerate,
   runStream,
   runTurn,
   type Attachment,
@@ -26,6 +28,12 @@ export type Approval = {
 export type Stream = { items: Part[]; approval: Approval | null; clarify: Clarify | null }
 
 const EMPTY_STREAM: Stream = { items: [], approval: null, clarify: null }
+
+// 发出这一轮后的误触保护窗口（毫秒）。
+// 发送键与「停止」在同一个位置：点了发送，按钮区下一帧就换成「插话 / 停止」，
+// 手指连点的第二下会直接落在那颗「停止」上，把刚发出的一轮打断（用户 2026-10-20 反馈）。
+// 这段时间内的停止请求一律忽略 —— 真正想停的人会在这一轮开始几百毫秒之后才点。
+const STOP_GUARD_MS = 900
 
 // ── 标签页提醒 ──
 // 有卡片在等你、或一轮刚跑完，而你正看着别的标签页时：标题和站点图标一起闪，切回来就停。
@@ -140,6 +148,10 @@ export function useTurnStream(opts: {
   // 发送的同步闸门：下面 stream 是 React 状态，同一个 tick 里还是旧值 ——
   // 连点两次发送键（或按住回车）时两次都读到 null，会真的发两条（实测 2 个 /turn）。
   const sendingRef = useRef(false)
+  // 这一轮是什么时候发出的：发送后按钮区会立刻从「发送」换成「插话 / 停止」，
+  // 而「停止」正好落在原来发送键的位置上 —— 连点第二下就会把刚发出的一轮打断。
+  // 所以发出后的短时间内忽略 stop()（见 STOP_GUARD_MS 注释）。
+  const turnStartRef = useRef(0)
   // 打断时服务端不会落库，先把已经生成的那半截攥住，回头补到页面上
   const partial = useRef<Part[] | null>(null)
   /** 用户没往上翻才自动跟到底（贴底锚定的容器里 scrollTop = 0 就是最底部） */
@@ -300,7 +312,7 @@ export function useTurnStream(opts: {
     } finally {
       abort.current = null
       setStream(null)
-      if (currentRef.current === id) await loadChat(id, true).catch(() => {})
+      if (currentRef.current === id) await loadChat(id, true).catch(() => notify('这一轮结束后刷新会话内容失败，切走再切回可重载'))
       await loadChats()
       if (document.hidden) startBlink()
     }
@@ -334,6 +346,7 @@ export function useTurnStream(opts: {
       return
     }
     sendingRef.current = true
+    turnStartRef.current = Date.now()
     let sid = currentRef.current
     setError(null)
     setSteers([])
@@ -386,8 +399,59 @@ export function useTurnStream(opts: {
       const held = partial.current
       partial.current = null
       setStream(null)
-      if (sid) await loadChat(sid, true).catch(() => {})
+      if (sid) await loadChat(sid, true).catch(() => notify('这一轮结束后刷新会话内容失败，切走再切回可重载'))
       // 被打断的那一轮数据库里没有记录，把已经生成的半截接在最后，别让画面白等
+      if (held && held.length) {
+        setMessages((m) =>
+          m.length && m[m.length - 1].role === 'assistant'
+            ? m
+            : [...m, { role: 'assistant', parts: held, stopped: true, ts: Date.now() / 1000 }],
+        )
+      }
+      await loadChats()
+      if (document.hidden) startBlink()
+    }
+  }
+
+  /** 重新生成最后一轮：回滚上一轮问答，以原提问在当前视图直接原地重跑（不重复新增用户消息） */
+  async function regenerate() {
+    if (stream) return
+    if (sendingRef.current) return
+    if (compressRunning.current) return
+    const sid = currentRef.current
+    if (!sid) return
+
+    sendingRef.current = true
+    turnStartRef.current = Date.now()
+    setError(null)
+    setSteers([])
+    setRate(null)
+    genRef.current = { first: null, last: null, closed: 0, tokens: 0 }
+    finalRef.current = false
+
+    // 界面上把最后这条助手回复去掉（等待新流式结果原地生成），绝不添加重复的用户消息！
+    setMessages((m) => (m.length && m[m.length - 1].role === 'assistant' ? m.slice(0, -1) : m))
+    stick.current = true
+    setStream({ ...EMPTY_STREAM })
+    setLink('live')
+
+    const ac = new AbortController()
+    abort.current = ac
+    try {
+      await runRegenerate(sid, onEvent, ac.signal)
+      setLink('idle')
+    } catch (err) {
+      if (!ac.signal.aborted) {
+        setLink('down')
+        setError(`重新生成失败：${String(err)}`)
+      }
+    } finally {
+      sendingRef.current = false
+      abort.current = null
+      const held = partial.current
+      partial.current = null
+      setStream(null)
+      if (sid) await loadChat(sid, true).catch(() => notify('这一轮结束后刷新会话内容失败，切走再切回可重载'))
       if (held && held.length) {
         setMessages((m) =>
           m.length && m[m.length - 1].role === 'assistant'
@@ -403,9 +467,11 @@ export function useTurnStream(opts: {
   async function stop() {
     const sid = currentRef.current
     if (!sid) return
+    // 连点发送键的余波：刚发出这一轮（< STOP_GUARD_MS）时忽略停止请求
+    if (Date.now() - turnStartRef.current < STOP_GUARD_MS) return
     partial.current = stream?.items ?? null
     abort.current?.abort()
-    await api.interrupt(sid).catch(() => {})
+    await api.interrupt(sid).catch(() => notify('停止请求没送到，这一轮还在跑'))
   }
 
   /** 生成中插话：把这句话交给正在跑的那一轮（不打断）。失败就退回让用户重发，不吞字。 */
@@ -429,7 +495,13 @@ export function useTurnStream(opts: {
     const ap = stream?.approval
     const sid = currentRef.current
     if (!ap || !sid) return
-    await api.approve(sid, ap.request_id, choice).catch(() => {})
+    try {
+      await api.approve(sid, ap.request_id, choice)
+    } catch {
+      // 失败就保留卡片：清掉卡片等于让用户以为已经批准，实际模型还在等
+      notify('审批没送出去，请再点一次')
+      return
+    }
     setStream((s) => (s ? { ...s, approval: null } : s))
   }
 
@@ -438,7 +510,12 @@ export function useTurnStream(opts: {
     const c = stream?.clarify
     const sid = currentRef.current
     if (!c || !sid) return
-    await api.clarify(sid, c.clarify_id, response).catch(() => {})
+    try {
+      await api.clarify(sid, c.clarify_id, response)
+    } catch {
+      notify('回答没送出去，请再试一次')
+      return
+    }
     setStream((s) => (s ? { ...s, clarify: null } : s))
   }
 
@@ -456,7 +533,7 @@ export function useTurnStream(opts: {
         // 压完了不在界面上报数：上下文圆环自己会回落，就是最直接的反馈
         setCompress(null)
         setCtx(await api.context(sid).catch(() => null))
-        await loadChat(sid, true).catch(() => {})
+        await loadChat(sid, true).catch(() => notify('压缩完了但刷新会话内容失败'))
       }
     } catch (e) {
       setCompress({
@@ -489,6 +566,7 @@ export function useTurnStream(opts: {
     detach,
     reset,
     send,
+    regenerate,
     stop,
     steer,
     decide,

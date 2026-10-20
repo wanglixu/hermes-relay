@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -51,7 +52,15 @@ try:
 except Exception:
     _hermes_synthetic_user_row = None
 
-_EXTRA_SCAFFOLD_USER_PREFIXES = ("[agentmemory context", "[DEFAULT]", "[STILL IN PROGRESS")
+_EXTRA_SCAFFOLD_USER_PREFIXES = (
+    "[agentmemory context",
+    "[DEFAULT]",
+    "[STILL IN PROGRESS",
+    # Hermes 在流被网络打断后写的续写提示：不是用户说的，也不该把一条回复切成几段
+    "[System:",
+    # 压缩摘要 / 交接说明
+    "[CONTEXT COMPACTION",
+)
 
 # 机器信封：套在用户原话外面的那层（写入时加的），显示前剥掉，原话留着。
 _SCAFFOLD_ENVELOPES = (
@@ -72,7 +81,18 @@ def _is_scaffold_user_row(text: str) -> bool:
 
 def _strip_scaffold_envelope(text: str) -> str:
     """剥掉机器信封，只留用户原话（剥完为空就交给 _is_scaffold_user_row 判）。"""
+    # 优先使用 Hermes 官方解析：还原 /skill 命令行格式（如 "/i-have-adhd 帮我看看"）
+    try:
+        from agent.skill_commands import describe_skill_invocation
+        desc = describe_skill_invocation(text, separator=" ")
+        if desc:
+            return desc
+    except Exception:
+        pass
     out = text
+    # 兼容 relay 历史上的自定义信封（[USER OVERRIDE] + [FORCED SKILL CONTEXT]）
+    out = re.sub(r"^\[USER OVERRIDE\][^\n]*\n*", "", out)
+    out = re.sub(r"\[FORCED SKILL CONTEXT:[^\]]+\][\s\S]*?\[/FORCED SKILL CONTEXT\]\s*", "", out)
     for rx in _SCAFFOLD_ENVELOPES:
         out = rx.sub("", out)
     return out.strip()
@@ -122,7 +142,7 @@ def _clean_title(value) -> str:
 
 
 def _is_generic_title(title: str) -> bool:
-    """Hermes 推不出来的标题长这样：'[Workspace::v1: /home/you/workspace] #34'、Untitled、admin…"""
+    """Hermes 推不出来的标题长这样：'[Workspace::v1: /home/user/workspace] #34'、Untitled、admin…"""
     if not title:
         return True
     low = title.strip().lower()
@@ -332,6 +352,74 @@ def _load_metrics() -> dict:
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _write_metrics(data: dict) -> None:
+    METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = METRICS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(METRICS_FILE)
+
+
+def prune_metrics(dry_run: bool = False) -> dict:
+    """删掉 metrics.json 里已经不存在于会话库的条目。
+
+    会话被删（`delete_chat`）时只清 Hermes 库和上传目录，metrics 是另一份 json，
+    一直没人回收：2026-10-19 量到 68 条里 24 条的会话已经没了。
+    按会话库对账最准，不看时间——老会话只要还在就该留着耗时数据。
+    """
+    with _metrics_lock:
+        data = _load_metrics()
+        total = len(data)
+        stale = [k for k in data if not chat_exists(k)]
+        if stale and not dry_run:
+            for k in stale:
+                data.pop(k, None)
+            _write_metrics(data)
+    return {"removed": len(stale), "kept": total - len(stale), "ids": stale}
+
+
+# 上传目录里的孤儿判定：会话已删 + 最后写入超过这么多天。草稿目录单独留着。
+UPLOAD_TTL_DAYS = 30
+
+
+def gc_uploads(dry_run: bool = True, ttl_days: int = UPLOAD_TTL_DAYS) -> dict:
+    """回收「会话已删、图还躺在磁盘上」的上传目录。
+
+    目录名就是会话 id（草稿期是 `draft`，无 id 时是 `misc`）——那两个永远留着：
+    draft 是当前新会话正在用的图，删了会让人正在打的字里图片变裂图。
+    判据是**目录里最新文件的 mtime**，不是目录本身的 mtime。
+    """
+    now = time.time()
+    root = Path(UPLOAD_DIR)
+    keep = {"draft", "misc"}
+    candidates, kept = [], 0
+    try:
+        entries = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        return {"scanned": 0, "removed": 0, "bytes": 0, "dirs": []}
+    for d in entries:
+        if d.name in keep or chat_exists(d.name):
+            kept += 1
+            continue
+        files = [p for p in d.rglob("*") if p.is_file()]
+        newest = max((p.stat().st_mtime for p in files), default=d.stat().st_mtime)
+        age_days = (now - newest) / 86400
+        if age_days < ttl_days:
+            kept += 1
+            continue
+        size = sum(p.stat().st_size for p in files)
+        candidates.append({"id": d.name, "bytes": size, "age_days": round(age_days, 1), "files": len(files)})
+        if not dry_run:
+            shutil.rmtree(d, ignore_errors=True)
+    return {
+        "scanned": len(entries),
+        "removed": 0 if dry_run else len(candidates),
+        "pending": len(candidates) if dry_run else 0,
+        "kept": kept,
+        "bytes": sum(c["bytes"] for c in candidates),
+        "dirs": sorted(candidates, key=lambda c: -c["bytes"]),
+    }
 
 
 def record_ttft(session_id: str, ttft: float, dur: float | None = None,
@@ -651,18 +739,19 @@ def display_messages(session_id: str) -> list[dict]:
         ts = float(m.get("timestamp") or 0)
 
         if role == "user":
-            close_turn()
             text = _strip_scaffold_envelope(_flatten(m.get("content")))
             # 服务端不存附件：把当初上传的图找回来挂在这条上，刷新后还看得见。
             # 按时间戳就近匹配（提问序号会被上下文压缩改写，见 record_uploads）。
             files = _files_for(uploads, ts)
-            # 整条都是机器写的（后台进程通知 / 压缩通知 / gateway 提示…）：不显示成用户气泡。
-            # 它后面若有助手行，会自然变成一个"没有提问的回合"，照常显示。
-            # 带附件的行例外 —— 图是他真上传的，得留着。
+            # 整条都是机器写的（后台进程通知 / 压缩通知 / 网络中断续写提示…）：不显示成用户气泡。
+            # **注意先判再切回合**：以前是 close_turn() 打头、判完再 continue，结果一条真实回复
+            # 被这些行切成好几条独立消息，各自带一个复制按钮和工具胶囊（2026-10-20 用户报的
+            # 「刷新后一个回复被拆成好几块」）。
             if not files and _is_scaffold_user_row(text):
                 continue
             if not text and not files:
                 continue
+            close_turn()
             msg: dict = {"role": "user", "text": text, "ts": ts}
             if files:
                 msg["images"] = [
@@ -743,3 +832,27 @@ def display_messages(session_id: str) -> list[dict]:
             })
 
     return out
+
+
+if __name__ == "__main__":
+    # 运维入口：回收孤儿上传目录（默认只看不删）
+    #   /usr/local/lib/hermes-agent/venv/bin/python sessions.py --gc-uploads
+    #   /usr/local/lib/hermes-agent/venv/bin/python sessions.py --gc-uploads --apply
+    import argparse
+
+    ap = argparse.ArgumentParser(description="hermes-relay 数据维护")
+    ap.add_argument("--gc-uploads", action="store_true", help="回收会话已删的上传目录")
+    ap.add_argument("--apply", action="store_true", help="真的删除（不加就是只列清单）")
+    ap.add_argument("--prune-metrics", action="store_true", help="删 metrics.json 里已删会话的条目")
+    args = ap.parse_args()
+    if args.prune_metrics:
+        print(json.dumps(prune_metrics(dry_run=not args.apply), ensure_ascii=False, indent=2))
+    if args.gc_uploads:
+        report = gc_uploads(dry_run=not args.apply)
+        print(f"扫描 {report['scanned']} 个目录，保留 {report.get('kept', 0)}，"
+              f"{'待删' if not args.apply else '已删'} {len(report['dirs'])} 个，"
+              f"共 {report['bytes'] / 1048576:.1f} MB")
+        for d in report["dirs"]:
+            print(f"  {d['id']}  {d['bytes'] / 1048576:.2f} MB  {d['files']} 个文件  {d['age_days']} 天前")
+    if not (args.gc_uploads or args.prune_metrics):
+        ap.print_help()

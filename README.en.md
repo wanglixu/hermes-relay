@@ -1,244 +1,199 @@
+<div align="center">
+
 # Hermes Relay
 
-**A thin web shell for [Hermes Agent](https://hermes-agent.nousresearch.com/docs).**
+**A lightweight, in-process thin web shell for [Hermes Agent](https://hermes-agent.nousresearch.com/docs)**
 
-It does not reimplement the agent and does not keep a second copy of your data. Model calls, tool execution, the approval gate, skills, memory, the session store and context compaction all come straight from Hermes itself. This project does exactly three things: push a Hermes turn to the browser over SSE, translate browser actions back into Hermes calls, and add the few screens Hermes does not ship with (a workbench and model/channel management).
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Next.js](https://img.shields.io/badge/Next.js-16.4-black?logo=next.js)](https://nextjs.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
+[![Design System](https://img.shields.io/badge/Theme-Warm%20Paper-D97706)](design-system/hermes-relay/MASTER.md)
 
-Backend: 7 Python files, ~4,000 lines, **standard library only**. Frontend: Next.js 16 + Tailwind v4, ~9,000 lines of TS/TSX.
+[中文说明文档](README.md) · [UI Specification](PRODUCT.md) · [Design System](design-system/hermes-relay/MASTER.md)
 
-> Requirement: a working Hermes Agent install on the same machine. The backend does not call Hermes over HTTP — it constructs `AIAgent` **inside the same process** using Hermes' own Python interpreter. That is the core design (it is what makes tool-approval blocking, clarifying questions and in-process callbacks possible), not a dependency you can route around.
+<br />
 
-## Why it is a good starting point for your own build
+<img src="docs/images/chat-overview.png" alt="Hermes Relay Main Chat View" width="100%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);" />
 
-- **Same-process, no extra hop.** `server.py` → `agent_bridge.py` → `AIAgent` all live in one process. Tool callbacks, approval blocking and clarify round-trips are bridged right there, with no gateway HTTP in between.
-- **Zero third-party Python dependencies.** The backend must run inside Hermes' own venv (it imports Hermes' runtime), and installing packages there would disturb Hermes' dependency tree and get wiped on upgrade. So the backend sticks to `ThreadingHTTPServer` + SSE, and keeps working across Hermes upgrades.
-- **No parallel data store.** Sessions, config, skills and memory are read from Hermes' own files (`~/.hermes/state.db`, `config.yaml`, `skills/`, `memories/`). A chat you start in the web UI can be resumed with `hermes --resume`, and CLI/Telegram sessions show up in the sidebar.
-- **One module per feature, with a template to copy.** To add a new view, write a module like `workbench_api.py` (plain stdlib functions), register a couple of routes in `server.py`, add a component under `web/components/workbench/`, and one entry in `TABS` in `activity-bar.tsx`. That is the whole recipe.
-- **Clear frontend layering.** `web/components/{chat,workbench,layout,ui}`; colours, spacing and fonts all come from the tokens in `design-system/`. No hard-coded colours in components.
-- **Docs written for AI collaborators.** `AGENTS.md` (red lines and workflow) and `PRODUCT.md` (product intent). This project has been built by AI agents all along — hand the repo to one and it can keep going.
+</div>
 
-## Features
+<br />
 
-**Chat**
+## 📖 Core Philosophy
 
-- SSE streaming: assistant text and reasoning as separate streams, tool calls and results, token rate, lifecycle status
-- Approval cards: when the agent wants to run a command or write a file, you get a confirm card (once / this session / always / deny) — the same gate Hermes uses
-- Clarifying questions: shown one at a time, multi-select and skip supported
-- Steer a running turn, or interrupt it
-- Attachments and native vision: images go to the model as native multimodal input; click to open a full-screen lightbox
-- Markdown rendering with syntax highlighting (shiki), copy/retry, long-reply folding, stick-to-bottom
+Hermes Relay does not re-invent the agent, nor does it maintain a duplicate data store: model calls, tool executions, approval gates, skills, persistent memories, session databases, and context compaction are **all directly powered by Hermes itself**.
 
-**Sessions**
+This project focuses on three missions:
+1. **In-process Native Connectivity**: The Python backend runs straight inside Hermes' virtual environment, constructing `AIAgent` instances within the exact same process. Tool execution callbacks, approval blocking, and clarify questions respond with zero network transit overhead.
+2. **Zero Third-Party Python Dependencies**: The backend relies purely on the Python standard library (`ThreadingHTTPServer` + SSE streaming pipeline), keeping the agent environment clean and resilient to upstream upgrades.
+3. **Immersive Warm Paper Design**: Built on Next.js 16 + Tailwind v4 with the custom "Warm Paper" aesthetic, calibrated for high-density technical reading, typography harmony, syntax highlighting, and an integrated workbench.
 
-- Shared with CLI / Telegram: list, search, paging, rename, delete
-- Windowing with "load earlier" paging; after a refresh it re-attaches to a turn that is still running (SSE replay)
-- Subagents spawned by a session are shown on it
+---
 
-**Context**
+## ✨ Features
 
-- Usage ring: tokens used come from Hermes' own authoritative counters, and the window / compaction threshold are **asked of Hermes itself** rather than guessed
-- Cache hit rate: Hermes' own formula, scoped to the current model
-- Manual compaction (optionally with a focus hint)
+### 💬 Conversational Intelligence & Streaming Inference
+- **Reasoning & Tool Call Collapsibles**: Distinct streaming for assistant text and reasoning thoughts (Chain of Thought), complete with expandable parameters and stdout blocks.
+- **In-Process Approval Gate**: Prompt interactive authorization cards whenever the agent requests shell execution or file modifications (`Once` / `Session` / `Always` / `Deny`).
+- **Clarification Questions**: Step-by-step interactive forms with multi-select and text input support.
+- **Mid-Turn Steer & Interrupt**: Steer agent actions during generation or cleanly interrupt live streaming.
+- **Performance Metrics**: Real-time TTFT (Time To First Token), true token generation rates (Tok/s), and duration tracking.
+- **Authoritative Context Gauge**: Ring meters and compaction thresholds queried straight from Hermes' core engine with accurate prefix cache hit ratios.
 
-**Models and channels**
+<br />
 
-- Switch model and reasoning effort (five levels) from the UI; takes effect per turn, no restart
-- Add a channel: give an endpoint + key, it lists every model that endpoint serves and saves them all at once; single-model entry still works
-- Remove models / channels (in-use ones are protected)
-- These only write Relay's own `models.json` — Hermes' global `config.yaml` is untouched, so CLI and Telegram are unaffected
+### 🎛️ Multi-Channel & Model Management
+<div align="center">
+  <img src="docs/images/model-picker.png" alt="Model & Channel Picker" width="85%" style="border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);" />
+</div>
 
-**Workbench (four views)**
+- **Aggregate Any OpenAI-Compatible Endpoints**: Connect with Base URL + API Key to automatically discover all available models.
+- **5-Level Reasoning Effort Toggle**: Instantly switch reasoning intensity (Off, Low, Medium, High, Max) across turns with zero service restarts.
+- **Configuration Isolation**: Custom channels and models are kept inside `~/.hermes/hermes-relay/models.json`, **never touching Hermes' global `config.yaml`**, keeping CLI, WeChat, and Telegram channels unaffected.
 
-- Task board: a SQLite-backed kanban (`~/.hermes/kanban.db`) with CRUD and status filtering
-- Processes: process list with resource usage, plus Hermes' own process state
-- Cron: reads Hermes' cron (`~/.hermes/cron/jobs.json`), toggle jobs and run one immediately
-- Artifacts: lists files in the workspace directory (default `~/workspace`) so you can see what the agent produced
+<br />
 
-**Settings**
+### 🛠️ Integrated Workbench
+<div align="center">
+  <img src="docs/images/workbench-kanban.png" alt="Workbench Kanban" width="85%" style="border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);" />
+</div>
 
-- Memory files: view/edit `memory`, `user` and `soul`, with automatic backups (last 20 kept)
-- Appearance: warm-paper palette and self-hosted fonts (split by `unicode-range`)
+- **Task Board (Kanban)**: Local SQLite-backed board with full CRUD and drag-and-drop state transitions.
+- **Scheduled Jobs (Cron)**: Direct visibility and control over Hermes' cron jobs (`~/.hermes/cron/jobs.json`) with immediate manual triggering.
+- **Process Telemetry**: Real-time inspection of host processes, memory footprints, and daemon statuses.
+- **Artifact Sandbox**: Direct file tree access to agent workspace outputs.
 
-**Skills**: type `/` in the composer to get the skill list (read from Hermes' skills directory)
+<br />
 
-## Architecture
+### ⚙️ Settings & Persistent Memory Management
+<div align="center">
+  <img src="docs/images/settings.png" alt="Settings Dialog" width="85%" style="border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);" />
+</div>
+
+- **Custom Model Edit Modal**: Dedicated controls to update display names, upstream model IDs, and override context windows.
+- **Memory Triad Editing**: Inspect and edit `memory`, `user`, and `soul` files with automatic rolling backups (retaining the 20 most recent snapshots).
+- **Self-Hosted Typography**: Fully self-hosted Source Sans 3, Noto Sans SC, and Sarasa Mono SC font subsets for pixel-perfect code alignment.
+
+---
+
+## 🏗️ Architecture
 
 ```
-browser ──SSE──▶ server.py ──▶ agent_bridge.py ──▶ AIAgent (same process)
-                    │                                  ▲
-                    ├──▶ sessions.py ──▶ Hermes state.db
-                    └──▶ workbench_api.py ──▶ kanban.db / cron / processes / artifacts
+Browser (Next.js 16 WebUI)
+   │
+   ├── [HTTP / SSE Stream] ──▶ server.py (8788, Standard Library Only)
+   │                               │
+   │                               ├──▶ agent_bridge.py
+   │                               │       │
+   │                               │       └──▶ AIAgent (In-process Hermes Runtime)
+   │                               │
+   │                               ├──▶ sessions.py ──▶ ~/.hermes/state.db
+   │                               ├──▶ models.py   ──▶ ~/.hermes/hermes-relay/models.json
+   │                               └──▶ workbench_api.py ──▶ kanban.db / cron / processes
+   │
+   └── [Static Assets / WebUI] ──▶ Next.js Standalone (3220)
 ```
 
-nginx splits by path: `/api/` to the backend (8788), pages and frontend assets (`/`, `/_next/static/`) to the frontend (3220).
+Nginx routes traffic as the primary reverse proxy:
+- `/api/` directly hits the Python backend (`8788`), with `proxy_buffering off` to ensure low-latency SSE delivery.
+- `/`, `/_next/static/`, and static assets route to the Next.js Standalone service (`3220`).
 
-| File | What it does |
-| --- | --- |
-| `server.py` | stdlib HTTP server: routing, SSE, attachment upload, static fallback |
-| `agent_bridge.py` | resolve model/channel → build AIAgent → run one turn → turn callbacks into events; approval / clarify bridge, mid-turn steering |
-| `sessions.py` | session list / history / create / rename / delete (reads and writes Hermes' own DB), display window, image records |
-| `context.py` | context usage (window / threshold / cache hit) and the skill list |
-| `compress.py` | manual context compaction |
-| `workbench_api.py` | workbench: board / processes / cron / artifacts |
-| `models.py` | models and channels chosen in the UI (stored in `models.json`) |
-| `web/` | Next.js 16 (App Router) + Tailwind v4, standalone build |
-| `design-system/hermes-relay/MASTER.md` | UI design system (colours / fonts / spacing) — read it before touching the UI |
-| `deploy/` | systemd units + reference nginx site config |
+---
 
-Runtime data lives in `~/.hermes/hermes-relay/`: `uploads/` (attachments and `index.json`), `models.json`, `metrics.json` (time-to-first-token / duration / output tokens), `partials.json`, `compactions.json`, `memory-backups/`.
+## 🚀 Quick Start
 
-## Getting it running
+### Prerequisites
+- A working installation of [Hermes Agent](https://hermes-agent.nousresearch.com/docs)
+- Node.js 20.9+
+- Nginx (recommended for production reverse proxy)
+- `p7zip-full` (`sudo apt install p7zip-full` for font extraction)
 
-Prerequisites: a working Hermes Agent, Node 20.9+ (Next.js 16), nginx, and `7z` (used to generate fonts: `apt install p7zip-full`).
-
+### 1. Clone the Repository
 ```bash
-# 1. clone (any path; /opt/hermes-relay used here)
-git clone https://github.com/wanglixu/hermes-relay.git /opt/hermes-relay && cd /opt/hermes-relay
-
-# 2. generate the self-hosted fonts (font files are not in the repo; ~15 min)
-web/scripts/fetch-fonts.sh
-
-# 3. build the frontend: output lands in web/.next/standalone — that is what production runs
-cd web && npm ci && npm run build
-cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/   # standalone does not include static assets
-
-# 4. try the backend (must use Hermes' own Python)
-cd /opt/hermes-relay && /usr/local/lib/hermes-agent/venv/bin/python server.py
-curl -s http://127.0.0.1:8788/api/health     # expect {"ok": true}
-
-# 5. install as systemd services (adjust paths in the two unit files first)
-sudo cp deploy/hermes-relay.service deploy/hermes-relay-web.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now hermes-relay hermes-relay-web
-
-# 6. nginx: copy deploy/nginx-relay.conf into sites-available, set server_name and cert paths, reload
+git clone https://github.com/wanglixu/hermes-relay.git /opt/hermes-relay
+cd /opt/hermes-relay
 ```
 
-See [`.env.example`](.env.example) for environment variables — **all optional**, sensible defaults otherwise (listen on `127.0.0.1:8788`, use Hermes' own `~/.hermes/state.db`, workbench looks at `~/workspace`).
+### 2. Fetch Self-Hosted Fonts
+```bash
+bash web/scripts/fetch-fonts.sh
+```
 
-> **The backend must run on Hermes' own Python** (default `/usr/local/lib/hermes-agent/venv/bin/python`, override with `HERMES_AGENT_DIR`), not the system python3 — it imports Hermes' runtime in-process.
-
-## API
-
-Backend HTTP API (port 8788):
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/api/health` | liveness |
-| GET | `/api/config` | currently resolved model / provider |
-| GET | `/api/models` | available models and channels, current selection, effort levels |
-| GET | `/api/skills` | skill list (powers the `/` menu) |
-| GET | `/api/chats?limit=&offset=&q=` | session list (search via `q`; 50 per page, pageable) |
-| POST | `/api/chats` | create a session → `{id}` (lazy: nothing is written until the first message) |
-| GET | `/api/chats/<id>?turns=&before=` | session detail + display window (paged "load earlier") |
-| GET | `/api/chats/<id>/stream?after=N` | SSE replay (re-attach to a running turn after refresh) |
-| GET | `/api/chats/<id>/context` | context usage (window / threshold / cache hit) |
-| POST | `/api/chats/<id>/turn` | **send a message, streamed over SSE** (body `{text, attachments:[{path,mime}]}`) |
-| POST | `/api/chats/<id>/interrupt` | interrupt the current turn |
-| POST | `/api/chats/<id>/steer` | steer mid-turn (body `{text}`) |
-| POST | `/api/chats/<id>/compress` | manual compaction (body `{focus?}`, synchronous) |
-| PATCH | `/api/chats/<id>` | rename (body `{title}`) |
-| DELETE | `/api/chats/<id>` | delete (physical, irreversible) |
-| POST | `/api/approvals` | answer an approval (body `{session_id, request_id, choice}`, choice = `once/session/always/deny`) |
-| POST | `/api/clarify` | answer a clarifying question (body `{session_id, clarify_id, response}`) |
-| POST | `/api/upload?session=&name=` | upload an attachment (raw bytes) → `{path,name,mime}` |
-| GET | `/api/uploads/<session>/<file>` | fetch an uploaded image |
-| POST | `/api/models/select` | switch current model / effort (body `{key?, effort?}`) |
-| POST | `/api/models/test` | probe endpoint + key and list its models (body `{base_url, api_key, model_id?}`) |
-| POST | `/api/models/add` | add one custom model (body `{name, base_url, api_key, model_id, context_length?}`) |
-| POST | `/api/models/remove` | remove a UI-added model (body `{key}`) |
-| POST | `/api/channels/add` | add a channel (body `{name, base_url, api_key}`; lists its models) |
-| POST | `/api/channels/sync` | re-sync a channel's model list (body `{id}`) |
-| POST | `/api/channels/remove` | remove a channel (body `{id}`) |
-| GET | `/api/kanban/tasks?status=` | board tasks |
-| POST | `/api/kanban/tasks` | create a task |
-| PATCH | `/api/kanban/tasks/<id>` | update a task |
-| DELETE | `/api/kanban/tasks/<id>` | delete a task |
-| GET | `/api/cron/jobs` | cron jobs (read from Hermes) |
-| POST | `/api/cron/toggle` | enable/disable a job (body `{id, enabled}`) |
-| POST | `/api/cron/run` | run a job now (body `{id}`) |
-| GET | `/api/system/processes` | process list with resource usage |
-| GET | `/api/system/logs?file=&lines=` | tail a log (default `agent.log`, 150 lines) |
-| GET | `/api/artifacts/files` | files in the workspace directory |
-| POST | `/api/admin/restart` | restart the backend after the current turn finishes (no body) |
-
-SSE event types: `delta` (text), `reasoning` (thinking), `tool_start` / `tool_end` / `tool`, `status` (lifecycle), `approval`, `clarify` / `clarify_end`, `error`, `done` (with usage), `eof` (end of turn).
-
-The frontend (3220) also serves three read-only local endpoints that read from disk directly instead of going through the backend: `/local-api/memory` (memory files and backups), `/local-api/file` (file preview), `/local-api/hermes-status` (is Hermes' gateway up).
-
-## Building on it
-
-**Frontend**
-
+### 3. Build Web Frontend
 ```bash
 cd web
-npm run dev                    # dev server on 127.0.0.1:3220
-bash scripts/dev-restart.sh    # build + copy into standalone + restart for local testing
+npm ci
+npm run build
+
+# Standalone build requires copying static assets
+cp -r .next/static .next/standalone/.next/
+cp -r public .next/standalone/
+cd ..
 ```
 
-> **Editing source without building changes nothing**: production runs the `web/.next/standalone` output, so run `dev-restart.sh` (or your own CI) after edits. Static asset filenames carry a content hash; if you put a CDN in front, make sure HTML is served `no-store`.
-
-**Backend**
-
-Restart to apply changes. **Do not use a timer, and do not `systemctl restart` from inside a session hosted by Relay** — the unit's `KillMode=control-group` will kill the executor along with the service. The right way is `POST /api/admin/restart`: it drops a marker file and restarts itself after the current turn's answer has been fully delivered (after `eof`).
-
-**Adding a new view**
-
-1. Backend: create `my_api.py` (plain stdlib functions) and add routes in `_api_get` / `do_POST` in `server.py`.
-2. Frontend: create `web/components/workbench/my-view.tsx` and add a fetch helper in `web/lib/api.ts`.
-3. Navigation: add an entry to `TABS` in `web/components/layout/activity-bar.tsx` and wire the view up in `web/app/page.tsx`.
-
-**Styling**: colours, spacing and fonts come from the tokens in `design-system/hermes-relay/MASTER.md`. Change the CSS variables there rather than hard-coding colours in components.
-
-## Deliberate design decisions (don't break these)
-
-1. **No FastAPI.** The process must run inside Hermes' own Python environment; installing packages there would disturb Hermes' dependency tree and get wiped on upgrade. `ThreadingHTTPServer` + SSE is plenty.
-2. **Don't hammer the agent.** The browser never polls; everything is pushed over SSE. Session lists and history are read straight from SQLite. One message runs the agent once. Titles are not generated by the model.
-3. **Streaming performance.** Tokens are accumulated in a `useRef` and flushed to React state every 80 ms; message components are memoised so only the streaming one re-renders. Don't change this to one `setState` per token.
-4. **Stick to bottom.** Auto-scroll only when the user was already at the bottom; scrolling up releases it (`stick` ref).
-5. **The approval gate is not optional.** When the agent wants to run a command it blocks its own thread. The web UI shows a card → `POST /api/approvals` → the block is released. This is security-relevant.
-6. **Never guess window or usage numbers.** Context window, compaction threshold and cache hit rate are all asked of Hermes' own resolver functions instead of keeping a private model table — otherwise they drift apart on every Hermes upgrade.
-
-## Known limitations
-
-- **One turn at a time per session** (Hermes' cross-process turn lease). If the same session is running in another frontend (CLI / upstream webui / Telegram), a new turn here waits on that lock and the UI just spins.
-- **The default model and channel are resolved once at process start and cached**, so changing Hermes' `config.yaml` needs a backend restart. (Models/channels you add in the UI live in `models.json` and apply per turn without a restart.)
-- **The sidebar lists every `webui / cli / telegram / discord / slack / api_server` session** in Hermes — the price of a shared history. To narrow it, edit `LISTED_SOURCES` in `sessions.py`.
-- **Attachments are stored as files, not in the message body**: images you sent are restored on refresh from the backend's upload records (matched by timestamp ±120 s). They display, but attachments themselves are not editable and the association relies on timestamps.
-- **Chrome desktop first.** Some animations use newer Chrome features (`@starting-style` etc.); Safari/Firefox degrade gracefully.
-- **Session deletion is physical and irreversible.** Unless the DB has been `VACUUM`ed, deleted content can still be recovered from free pages (see the recovery script).
-- **No authentication.** It assumes it only listens on loopback, or that something else sits in front of it (the reference nginx config shows an optional `auth_request` setup).
-
-## Verification scripts
+### 4. Start Backend Server
+> **Note**: You must run the backend with Hermes Agent's Python venv to import agent runtime packages in-process.
 
 ```bash
-# one plain text turn (runs the agent directly, no server)
-/usr/local/lib/hermes-agent/venv/bin/python scripts/smoke_turn.py "reply with exactly: ok"
-
-# native vision: builds a left-red/right-blue image and checks the model sees it
-/usr/local/lib/hermes-agent/venv/bin/python scripts/smoke_image.py
-
-# streaming cadence (time to first token, gaps)
-/usr/local/lib/hermes-agent/venv/bin/python scripts/probe_stream.py
-
-# backend API regression (cross-site guard, parameter validation)
-/usr/local/lib/hermes-agent/venv/bin/python scripts/verify_hardening.py
-
-# offline regression for context usage / window / cache-hit math (no model calls)
-/usr/local/lib/hermes-agent/venv/bin/python scripts/test_context_fixes.py
-
-# recover a deleted session (copy the DB first)
-/usr/local/lib/hermes-agent/venv/bin/python scripts/recover_deleted_session.py --db <db-copy> --sid <session-id> --markdown x.md
+/usr/local/lib/hermes-agent/venv/bin/python server.py
+# In another terminal:
+curl -s http://127.0.0.1:8788/api/health
+# Expected output: {"ok": true}
 ```
 
-## Deployment notes
+### 5. Install Systemd Services
+```bash
+sudo cp deploy/hermes-relay.service /etc/systemd/system/
+sudo cp deploy/hermes-relay-web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hermes-relay hermes-relay-web
+```
 
-- **Fonts**: Source Sans 3 / Noto Sans SC / Sarasa Mono SC are self-hosted and split by `unicode-range`; **the files are not committed**. A fresh checkout must run `web/scripts/fetch-fonts.sh` before building, or `next build` fails looking for them.
-- **Path routing**: `/api/` → backend 8788 with `proxy_buffering off` (otherwise SSE output is buffered and looks like it arrives in one lump); `/` and `/_next/static/` → frontend 3220.
-- **Auth**: this project does not authenticate. The optional `auth_request` block in the reference config points at a self-hosted cookie gateway — delete it if you don't need it.
-- **Caching**: HTML and `/api/` must be `private, no-store` or UI changes won't show up; content-hashed `/_next/static/` can be cached aggressively.
-- **Cloudflare (optional)**: don't let it cache HTML, and let nginx trust its real IP ranges (the reference config has `set_real_ip_from`).
-- **Restarting the backend**: use `POST /api/admin/restart`, not `systemctl restart` (see above).
+### 6. Configure Nginx
+Copy `deploy/nginx-relay.conf` to `/etc/nginx/sites-available/`, configure your domain and SSL certificates, then reload:
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-## License
+---
 
-[MIT](LICENSE)
+## 📡 API Contract
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/api/health` | Health check probe |
+| `GET` | `/api/config` | Read active model & channel config |
+| `GET` | `/api/models` | List available models, channels, active selection, and effort presets |
+| `POST` | `/api/models/select` | Switch active model or effort (`{key?, effort?}`) |
+| `POST` | `/api/models/test` | Test endpoint connectivity and enumerate supported models |
+| `POST` | `/api/models/add` | Add a standalone custom model |
+| `POST` | `/api/models/update` | Update custom model display name, model ID, or context window |
+| `POST` | `/api/models/remove` | Delete a custom model |
+| `POST` | `/api/channels/add` | Add an OpenAI-compatible channel |
+| `POST` | `/api/channels/sync` | Re-sync model listing from channel |
+| `POST` | `/api/channels/remove` | Delete a channel |
+| `GET` | `/api/chats?limit=&offset=&q=` | Query sessions with pagination and search |
+| `POST` | `/api/chats` | Allocate session ID (**lazy creation**: persisted upon first turn) |
+| `GET` | `/api/chats/<id>?turns=&before=` | Session transcript windowing |
+| `GET` | `/api/chats/<id>/stream?after=N` | SSE reconnect & replay stream |
+| `GET` | `/api/chats/<id>/context` | Authoritative context window usage & cache hit stats |
+| `POST` | `/api/chats/<id>/turn` | **Send turn message** (SSE streaming events) |
+| `POST` | `/api/chats/<id>/interrupt` | Immediately abort active turn |
+| `POST` | `/api/chats/<id>/steer` | Inject prompt mid-generation |
+| `POST` | `/api/chats/<id>/compress` | Trigger manual context compaction with focus hint |
+| `PATCH` | `/api/chats/<id>` | Rename session title |
+| `DELETE` | `/api/chats/<id>` | Physical deletion of session |
+| `POST` | `/api/approvals` | Approval response (`once` / `session` / `always` / `deny`) |
+| `POST` | `/api/clarify` | Respond to clarifying question |
+| `POST` | `/api/upload?session=&name=` | Upload attachment for native multimodal vision |
+| `GET` | `/api/kanban/tasks?status=` | Task board CRUD |
+| `GET` | `/api/cron/jobs` | Cron job listing & toggle execution |
+| `GET` | `/api/system/processes` | System process monitor |
+| `POST` | `/api/admin/restart` | **Graceful Restart**: safely queued until the active turn ends |
+
+---
+
+## 📄 License
+
+This project is open-source software licensed under the [MIT License](LICENSE).

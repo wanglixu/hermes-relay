@@ -2,6 +2,7 @@
 
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -9,8 +10,9 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react'
-import { List, RotateCw } from 'lucide-react'
+import { List, Quote, RotateCw } from 'lucide-react'
 import { Composer } from '@/components/chat/composer'
+import { EmptyState } from '@/components/chat/empty-state'
 import { ApprovalCard, ClarifyCard } from '@/components/chat/cards'
 import { FilePreview, type PreviewTarget } from '@/components/chat/file-preview'
 import { ImageZoom, zoomImage } from '@/components/chat/image-zoom'
@@ -38,8 +40,11 @@ import {
   SystemNotice,
 } from '@/components/chat/statusbar'
 import { isToday, useSessions } from '@/hooks/use-sessions'
+import { useRelayConfig } from '@/hooks/use-relay-config'
 import { useTurnStream } from '@/hooks/use-turn-stream'
 import { api, type Compaction, type ModelsPayload, type Msg, type Skill } from '@/lib/api'
+import { ConfirmHost } from '@/components/ui/confirm'
+import { ToastHost, notify } from '@/components/ui/toast'
 
 /** 压缩提示怎么说。
  *
@@ -103,13 +108,8 @@ export default function Page() {
   // 会话加载完发现有一轮还在跑时，由它把连接接上（同一个函数，见 use-turn-stream）
   liveRef.current = turn.attach
 
-  const [model, setModel] = useState('')
-  // 页面上可选的模型 / 思考强度（只作用于这个网页，见 model-picker.tsx）
-  const [models, setModels] = useState<ModelsPayload | null>(null)
-  const loadModels = () => {
-    api.models().then(setModels).catch(() => {})
-  }
-  const [skills, setSkills] = useState<Skill[]>([])
+  // 当前模型 / 可选模型 / 技能清单：加载与失败提示都在 use-relay-config.ts
+  const { model, models, skills, loadModels, loadSkills } = useRelayConfig()
   const [navTab, setNavTab] = useState<NavTab>('chat')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -119,6 +119,22 @@ export default function Page() {
   const [openLong, setOpenLong] = useState<string | null>(null)
   const scrollBox = useRef<HTMLDivElement>(null)
   const [suggestionSeed, setSuggestionSeed] = useState(0)
+
+  // 划词引用状态
+  const [quotePopup, setQuotePopup] = useState<{ text: string; top: number; left: number } | null>(null)
+  const [quoteIncoming, setQuoteIncoming] = useState<string | null>(null)
+
+  const handleQuote = (text: string) => {
+    if (!text || !text.trim()) return
+    setQuoteIncoming(text.trim())
+    setQuotePopup(null)
+    window.getSelection()?.removeAllRanges()
+    // 平滑视口对准输入框
+    const composerBox = document.querySelector('.composer-box')
+    if (composerBox) {
+      composerBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }
 
   // 动态智能建议：结合最近会话的主题、当前安装的高频技能与常用工程任务自动生成，支持「换一批」洗牌
   const dynamicSuggestions = useMemo(() => {
@@ -162,14 +178,12 @@ export default function Page() {
   selectChatRef.current = selectChat
 
   useEffect(() => {
-    api.config().then((c) => setModel(c.model)).catch(() => {})
-    api.models().then(setModels).catch(() => {})
-    api.skills().then((r) => setSkills(r.skills)).catch(() => {})
     loadChats().then((list) => {
       // 只自动打开「今天」的会话（正文是这一屏要用的）。
       // 更早的会话不预加载对话数据：侧栏点标题时才去服务端取（非今日只给 1 个回合）。
       const first = list[0]
-      if (first && isToday(first.last_active)) selectChatRef.current(first.id).catch(() => {})
+      if (first && isToday(first.last_active))
+        selectChatRef.current(first.id).catch((e) => notify(`打开最近的会话失败：${String((e as Error)?.message || e)}`))
     })
   }, [loadChats])
 
@@ -183,12 +197,38 @@ export default function Page() {
     }
   }, [current])
 
+  /** 消息流上下那两条 28px 渐隐：只有那一侧真的还藏着内容时才张开。
+   *  以前是常开的，结果一小段正文（内容不满一屏）上下也会被啃掉一截 —— 2026-10-19 修。 */
+  const syncStreamFade = useCallback(() => {
+    const box = scrollBox.current
+    if (!box) return
+    const distTop = box.scrollTop
+    const distBottom = box.scrollHeight - (box.scrollTop + box.clientHeight)
+    box.style.setProperty('--fade-top', distTop > 2 ? 'var(--stream-fade)' : '0px')
+    box.style.setProperty('--fade-bottom', distBottom > 2 ? 'var(--stream-fade)' : '0px')
+  }, [])
+
+  // 内容长高 / 变矮、窗口缩放、切会话都要重算（内容高度变了但盒子尺寸没变，scroll 事件不会来）
+  useEffect(() => {
+    const box = scrollBox.current
+    if (!box) return
+    syncStreamFade()
+    const ro = new ResizeObserver(() => syncStreamFade())
+    Array.from(box.children).forEach((el) => ro.observe(el))
+    window.addEventListener('resize', syncStreamFade)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', syncStreamFade)
+    }
+  }, [syncStreamFade, current])
+
   // 自动吸底：用户往上翻了就不抢。
   useEffect(() => {
     const box = scrollBox.current
     if (!box || !stick.current) return
     box.scrollTop = box.scrollHeight
-  }, [messages, stream?.items, error, stick])
+    syncStreamFade()
+  }, [messages, stream?.items, error, stick, syncStreamFade])
 
   function onScroll() {
     const box = scrollBox.current
@@ -196,21 +236,39 @@ export default function Page() {
     // 正向自上而下流：scrollTop + clientHeight 距离 scrollHeight 差距在 80px 内视为吸底态
     const distToBottom = box.scrollHeight - (box.scrollTop + box.clientHeight)
     stick.current = distToBottom <= 80
+    syncStreamFade()
   }
 
-  // 记录展开更早消息前的滚动高度差，保证历史消息载入后视口绝不跳动
-  const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
+  // 记录展开更早消息前的首个可见元素，保证历史消息载入后视口绝不跳动
+  const earlierAnchor = useRef<{ key: string; top: number; expiresAt: number } | null>(null)
 
   useLayoutEffect(() => {
     if (earlierAnchor.current && scrollBox.current) {
       const box = scrollBox.current
-      const diff = box.scrollHeight - earlierAnchor.current.height
-      if (diff > 0) {
-        box.scrollTop = earlierAnchor.current.top + diff
+      const anchor = earlierAnchor.current
+      let rafId = 0
+      const fix = () => {
+        if (!anchor) return
+        const targetEl = box.querySelector<HTMLElement>(`[data-timeline-key="${anchor.key}"]`)
+        if (targetEl && targetEl.isConnected) {
+          const delta = targetEl.getBoundingClientRect().top - anchor.top
+          if (Math.abs(delta) > 0.5) {
+            box.scrollTop += delta
+          }
+        }
+        if (Date.now() < anchor.expiresAt) {
+          rafId = requestAnimationFrame(fix)
+        } else {
+          earlierAnchor.current = null
+        }
       }
-      earlierAnchor.current = null
+      fix()
+      rafId = requestAnimationFrame(fix)
+      return () => {
+        if (rafId) cancelAnimationFrame(rafId)
+      }
     }
-  }, [messages])
+  }, [messages, compactions])
 
   /* 预览面板一开一关，聊天区宽度就变了：开合前先记一个锚点，布局提交后还回去 */
   const previewAnchor = useRef<{ stick: boolean; el?: HTMLElement; top?: number }>({ stick: true })
@@ -280,27 +338,125 @@ export default function Page() {
     }
   }
 
+  // 监听划词选区，弹出「引用」悬浮条
+  useEffect(() => {
+    const handleSelection = () => {
+      const sel = window.getSelection()
+      if (!sel || sel.isCollapsed) {
+        setQuotePopup(null)
+        return
+      }
+
+      const text = sel.toString().trim()
+      if (!text || text.length < 1) {
+        setQuotePopup(null)
+        return
+      }
+
+      const box = scrollBox.current
+      if (!box) return
+
+      const anchorNode = sel.anchorNode
+      const focusNode = sel.focusNode
+      if (!anchorNode || !focusNode) return
+      if (!box.contains(anchorNode) || !box.contains(focusNode)) {
+        setQuotePopup(null)
+        return
+      }
+
+      const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode.parentElement
+      const focusEl = focusNode instanceof Element ? focusNode : focusNode.parentElement
+      if (
+        anchorEl?.closest('.tiptap, input, textarea, button, [contenteditable="true"]') ||
+        focusEl?.closest('.tiptap, input, textarea, button, [contenteditable="true"]')
+      ) {
+        setQuotePopup(null)
+        return
+      }
+
+      if (sel.rangeCount === 0) return
+      const range = sel.getRangeAt(0)
+      const rect = range.getBoundingClientRect()
+      if (rect.width === 0 && rect.height === 0) {
+        setQuotePopup(null)
+        return
+      }
+
+      // 如果选区不在当前视口内，不弹出
+      if (rect.bottom <= 0 || rect.top >= window.innerHeight) {
+        setQuotePopup(null)
+        return
+      }
+
+      // 计算悬浮条位置，居中在选区上方（安全限制在视口内部）
+      const preferredTop = rect.top - 42
+      const top = Math.max(
+        16,
+        Math.min(
+          window.innerHeight - 56,
+          preferredTop < 56 ? rect.bottom + 8 : preferredTop,
+        ),
+      )
+      const left = Math.max(48, Math.min(window.innerWidth - 48, rect.left + rect.width / 2))
+
+      setQuotePopup({ text, top, left })
+    }
+
+    const onMouseUp = () => {
+      setTimeout(handleSelection, 15)
+    }
+
+    const onScroll = () => {
+      setQuotePopup(null)
+    }
+
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('[data-quote-popup]')) {
+        setQuotePopup(null)
+      }
+    }
+
+    const box = scrollBox.current
+    document.addEventListener('mouseup', onMouseUp)
+    if (box) {
+      box.addEventListener('scroll', onScroll, { passive: true })
+    }
+    document.addEventListener('mousedown', onMouseDown)
+
+    return () => {
+      document.removeEventListener('mouseup', onMouseUp)
+      if (box) {
+        box.removeEventListener('scroll', onScroll)
+      }
+      document.removeEventListener('mousedown', onMouseDown)
+    }
+  }, [])
+
   // 时间线 = 消息 + 压缩记录。压缩记录不是固定在底部的特殊节点，
   // 而是一条按时间插进消息流的系统提示，跟着历史一起滚走。
-  // 「重新生成」挂在**最后一条提问之后的那条回复**上（保底方案——把上一条提问原样再发一次，不改历史）。
-  // 注意定位的是「那条回复」的下标：按钮长在助手消息上，拿提问的下标去比永远对不上（上一版就是这么哑的）。
+  // 「重新生成」挂在最后一条提问之后的那条回复上（回滚旧回答并在原地重新发起生成）
   const regenerateTarget = useMemo(() => {
-    let text = ''
-    let replyIdx = -1
+    let hasUser = false
+    let replyKey = ''
     messages.forEach((m, i) => {
       if (m.role === 'user') {
-        text = stripAttachmentMarks(m.text || '').trim()
-        replyIdx = -1 // 出现新提问：上一条回复不再提供「重新生成」
-      } else if (m.role === 'assistant' && text) {
-        replyIdx = i
+        hasUser = true
+        replyKey = '' // 出现新提问：上一条回复不再提供「重新生成」
+      } else if (m.role === 'assistant' && hasUser) {
+        replyKey = m.ts ? `${m.role}-${m.ts}` : `m-${i}`
       }
     })
-    return replyIdx >= 0 ? { key: `m-${replyIdx}`, text } : null
+    return replyKey ? { key: replyKey } : null
   }, [messages])
 
   const timeline = useMemo(() => {
     type Item = { kind: 'msg'; msg: Msg; key: string } | { kind: 'notice'; rec: Compaction; key: string }
-    const items: Item[] = messages.map((m, i) => ({ kind: 'msg', msg: m, key: `m-${i}` }))
+    const items: Item[] = messages.map((m, i) => ({
+      kind: 'msg',
+      msg: m,
+      key: m.ts ? `${m.role}-${m.ts}` : `m-${i}`,
+    }))
     // 压缩记录只显示「窗口里够得着」的那条：比窗口最早那条消息还早的先不显示
     const oldest = messages.length ? (typeof messages[0].ts === 'number' ? messages[0].ts : 0) : Infinity
     compactions
@@ -323,6 +479,20 @@ export default function Page() {
       })
     return items
   }, [messages, compactions])
+
+  // 正在生成的那一轮：历史里已经落了半截（后端边跑边写库），但它还没答完。
+  // 这一轮交给 StreamingMessage 展开显示，历史里那条不再渲染 —— 否则会同时出现
+  // 「收起的胶囊」和「展开的思维链」（刷新 / 切走再切回时最明显）。
+  // 胶囊的口径是「答完之后收成一行」，所以未完成时不该有它。
+  const pendingKey = useMemo(() => {
+    if (!stream) return null
+    for (let i = timeline.length - 1; i >= 0; i--) {
+      const it = timeline[i]
+      if (it.kind === 'notice') continue
+      return it.msg.role === 'assistant' ? it.key : null
+    }
+    return null
+  }, [stream, timeline])
 
   const title = chats.find((c) => c.id === current)?.title || '新对话'
 
@@ -365,6 +535,7 @@ export default function Page() {
           setSidebarOpen(false)
           turn.detach()
           turn.reset()
+          loadSkills()
           void newChat()
         }}
         onRename={(id, t) => void renameChat(id, t)}
@@ -413,44 +584,17 @@ export default function Page() {
             ref={scrollBox}
             onScroll={onScroll}
             onClick={onStreamClick}
-            className="msg-stream flex min-h-0 flex-1 flex-col overflow-y-auto"
+            className="msg-stream flex min-h-0 flex-1 flex-col overflow-y-auto [overflow-anchor:none]"
           >
             {/* 顶部弹性占位：当消息少于一屏时撑开，将内容推至贴底；超过一屏时自然压缩为 0，正向平稳滚动 */}
             <div className="flex-1 min-h-0" />
             <div className="mx-auto flex w-full max-w-read flex-none flex-col gap-[34px] px-10 pt-[34px] pb-14 max-[900px]:px-5 max-[900px]:py-6">
               {timeline.length === 0 && !stream && (
-                <div className="flex flex-1 flex-col items-center justify-center py-16 text-center select-none">
-                  <div className="mb-3.5 grid size-11 place-items-center rounded-2xl border border-line bg-panel shadow-[0_2px_8px_rgba(45,45,42,0.04)]">
-                    <span className="font-title text-[18px] font-semibold text-accent-text">R</span>
-                  </div>
-                  <h2 className="font-title text-[17px] font-medium tracking-tight text-ink">
-                    随时告诉我你的想法
-                  </h2>
-                  <p className="mt-1.5 max-w-[420px] font-read text-[13.5px] leading-relaxed text-muted">
-                    提问、分析代码、检索资料，或输入 <span className="font-mono text-[12.5px] text-accent-text">/</span> 查看可用技能
-                  </p>
-                  <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-                    {dynamicSuggestions.map((prompt) => (
-                      <button
-                        key={prompt}
-                        type="button"
-                        onClick={() => void turn.send(prompt, [])}
-                        className="cursor-pointer rounded-full border border-line-strong/60 bg-input px-3.5 py-1.5 font-ui text-[12px] text-ink-2 shadow-[0_1px_2px_rgba(45,45,42,0.03)] transition-all hover:border-accent/50 hover:bg-raised hover:text-ink active:scale-[0.99]"
-                      >
-                        {prompt}
-                      </button>
-                    ))}
-                    <button
-                      type="button"
-                      title="换一批建议"
-                      onClick={() => setSuggestionSeed((s) => s + 1)}
-                      className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-line-strong/40 bg-transparent px-2.5 py-1.5 font-ui text-[11.5px] text-muted transition-colors hover:border-accent/40 hover:bg-raised/70 hover:text-accent-text"
-                    >
-                      <RotateCw className="size-3 transition-transform active:rotate-180" />
-                      <span>换一批</span>
-                    </button>
-                  </div>
-                </div>
+                <EmptyState
+                  suggestions={dynamicSuggestions}
+                  onPick={(prompt) => void turn.send(prompt, [])}
+                  onShuffle={() => setSuggestionSeed((v) => v + 1)}
+                />
               )}
               {hasMore && (
                 <SoonButton
@@ -458,37 +602,46 @@ export default function Page() {
                   onClick={() => {
                     const box = scrollBox.current
                     if (box) {
-                      earlierAnchor.current = { height: box.scrollHeight, top: box.scrollTop }
+                      const items = Array.from(box.querySelectorAll<HTMLElement>('[data-timeline-key]'))
+                      const visible = items.find((el) => el.getBoundingClientRect().bottom > 0) || items[0]
+                      if (visible) {
+                        const key = visible.getAttribute('data-timeline-key') || ''
+                        const top = visible.getBoundingClientRect().top
+                        earlierAnchor.current = { key, top, expiresAt: Date.now() + 450 }
+                      }
+                      stick.current = false
                     }
                     void loadEarlier()
                   }}
                 />
               )}
-              {timeline.map((it) =>
-                it.kind === 'notice' ? (
-                  <SystemNotice key={it.key}>
-                    {compNotice(it.rec)}
-                    {it.rec.seconds ? `（耗时 ${fmtDur(it.rec.seconds)}）` : ''}
-                  </SystemNotice>
-                ) : it.msg.role === 'user' ? (
-                  <UserMessage
-                    key={it.key}
-                    msg={it.msg}
-                    open={openLong === it.key}
-                    onToggle={() => setOpenLong(openLong === it.key ? null : it.key)}
-                  />
-                ) : (
-                  <AssistantMessage
-                    key={it.key}
-                    msg={it.msg}
-                    onRegenerate={
-                      !stream && regenerateTarget && it.key === regenerateTarget.key
-                        ? () => void turn.send(regenerateTarget.text, [])
-                        : undefined
-                    }
-                  />
-                ),
-              )}
+              {timeline.map((it) => (
+                <div key={it.key} data-timeline-key={it.key}>
+                  {it.kind === 'notice' ? (
+                    <SystemNotice>
+                      {compNotice(it.rec)}
+                      {it.rec.seconds ? `（耗时 ${fmtDur(it.rec.seconds)}）` : ''}
+                    </SystemNotice>
+                  ) : it.msg.role === 'user' ? (
+                    <UserMessage
+                      msg={it.msg}
+                      open={openLong === it.key}
+                      onToggle={() => setOpenLong(openLong === it.key ? null : it.key)}
+                    />
+                  ) : (
+                    it.kind === 'msg' && it.key === pendingKey ? null : (
+                      <AssistantMessage
+                        msg={it.msg}
+                        onRegenerate={
+                          !stream && regenerateTarget && it.key === regenerateTarget.key
+                            ? () => void turn.regenerate()
+                            : undefined
+                        }
+                      />
+                    )
+                  )}
+                </div>
+              ))}
 
               {stream && (
                 <StreamingMessage
@@ -503,7 +656,6 @@ export default function Page() {
                   key={i}
                   tag="插话"
                   text={t}
-                  title="这一轮不打断，文字会在下一批工具跑完后送到模型面前"
                 />
               ))}
 
@@ -511,7 +663,6 @@ export default function Page() {
                 <SteerNote
                   tag="排队"
                   text={queued.text}
-                  title="压缩期间不接受新的一轮，这条先排着，压完自动发出"
                   hint={<span className="ml-1.5 text-line-strong">（压缩完成后自动发送）</span>}
                 />
               )}
@@ -552,6 +703,7 @@ export default function Page() {
           clarifyPending={!!stream?.clarify}
           context={ctx}
           skills={skills}
+          onRefreshSkills={loadSkills}
           models={models}
           onModelsChanged={loadModels}
           onSend={(text, attachments) => void turn.send(text, attachments)}
@@ -559,6 +711,8 @@ export default function Page() {
           onSteer={(t) => void turn.steer(t)}
           onCompress={() => void turn.compressCtx()}
           compress={compress}
+          quoteIncoming={quoteIncoming}
+          onQuoteIncomingHandled={() => setQuoteIncoming(null)}
         />
       </main>
 
@@ -590,8 +744,39 @@ export default function Page() {
       {/* 点图片全屏放大看 */}
       <ImageZoom />
 
+      {/* 划词选中助手回复时的微型「引用」悬浮条 */}
+      {quotePopup && (
+        <div
+          data-quote-popup="true"
+          style={{
+            position: 'fixed',
+            top: quotePopup.top,
+            left: quotePopup.left,
+            transform: 'translateX(-50%)',
+            zIndex: 70,
+          }}
+          onMouseDown={(e) => e.preventDefault()}
+          className="pointer-events-auto animate-in fade-in zoom-in-95 duration-100"
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation()
+              handleQuote(quotePopup.text)
+            }}
+            className="flex cursor-pointer items-center gap-1.5 rounded-full border border-line-strong/80 bg-panel px-3 py-1 font-ui text-[12px] font-medium text-ink shadow-[0_4px_16px_rgba(45,45,42,0.12)] backdrop-blur-md transition-all hover:border-accent hover:bg-raised hover:text-accent-text active:scale-95 select-none"
+          >
+            <Quote size={12} className="text-accent-text" />
+            <span>引用</span>
+          </button>
+        </div>
+      )}
+
       {/* 设置：记忆 / 用户档案 / 人格三份文件的聚合入口 */}
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {/* 站内确认框与轻提示的宿主：一个页面挂一次，组件里用 confirmAction() / notify() 触发 */}
+      <ConfirmHost />
+      <ToastHost />
     </div>
   )
 }

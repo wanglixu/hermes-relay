@@ -1,8 +1,10 @@
 'use client'
 
+import { useState, useRef, useEffect } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { ChevronDown, Ellipsis, Loader2, Plus, Search, Settings, X } from 'lucide-react'
+import { ChevronDown, Ellipsis, Loader2, Plus, Search, X } from 'lucide-react'
 import { cn } from '@/lib/cn'
+import { confirmAction } from '@/components/ui/confirm'
 import type { Chat } from '@/lib/api'
 
 function when(ts: number): string {
@@ -68,7 +70,7 @@ export function Sidebar({
   onNew: () => void
   onRename: (id: string, title: string) => void
   onDelete: (id: string) => void
-  onOpenSettings: () => void
+  onOpenSettings?: () => void
   onClose: () => void
   onQuery: (v: string) => void
   /** 还有更早的会话没拉下来（搜索时不出现这个按钮） */
@@ -76,6 +78,17 @@ export function Sidebar({
   loadingMoreChats: boolean
   onLoadMoreChats: () => void
 }) {
+  const [showSearch, setShowSearch] = useState(false)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  const isSearchActive = showSearch || Boolean(query)
+
+  useEffect(() => {
+    if (showSearch) {
+      searchInputRef.current?.focus()
+    }
+  }, [showSearch])
+
   const groups = new Map<string, Chat[]>()
   for (const c of chats) {
     const g = groupOf(c.last_active)
@@ -108,15 +121,25 @@ export function Sidebar({
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={onNew}
-              className="grid size-7 place-items-center rounded-md text-ink-2 transition-colors hover:bg-raised hover:text-ink cursor-pointer"
-              title="新对话"
-              aria-label="新对话"
+              onClick={() => {
+                if (isSearchActive) {
+                  setShowSearch(false)
+                  if (query) onQuery('')
+                } else {
+                  setShowSearch(true)
+                }
+              }}
+              className={cn(
+                'grid size-7 place-items-center rounded-md text-ink-2 transition-colors cursor-pointer',
+                isSearchActive ? 'bg-raised text-accent-text' : 'hover:bg-raised hover:text-ink',
+              )}
+              title={isSearchActive ? '关闭搜索' : '搜索'}
+              aria-label={isSearchActive ? '关闭搜索' : '搜索'}
             >
-              <Plus size={16} strokeWidth={2.2} />
+              <Search size={15} strokeWidth={2.2} />
             </button>
             <button
-              className="hidden rounded-md p-1 text-muted hover:bg-raised hover:text-ink max-[900px]:inline-flex"
+              className="hidden rounded-md p-1 text-muted hover:bg-raised hover:text-ink max-[900px]:inline-flex cursor-pointer"
               onClick={onClose}
               aria-label="收起会话列表"
             >
@@ -125,38 +148,65 @@ export function Sidebar({
           </div>
         </div>
 
-        <div className="px-3 pb-1.5">
-          <div className="relative">
-            <Search
-              size={13}
-              aria-hidden="true"
-              className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted"
-            />
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => onQuery(e.target.value)}
-              placeholder="筛选对话..."
-              aria-label="筛选对话"
-              className="h-[32px] w-full rounded-lg border border-line bg-page pr-8 pl-7 text-[12.5px] text-ink transition-colors placeholder:text-muted focus:border-line-strong focus:outline-none"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => onQuery('')}
-                aria-label="清空搜索"
-                className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md p-1 text-muted hover:bg-raised hover:text-ink"
-              >
-                <X size={12} />
-              </button>
-            )}
-          </div>
+        {/* 新建聊天：整行的大按钮 */}
+        <div className="px-3 pb-2">
+          <button
+            type="button"
+            onClick={onNew}
+            className="group flex h-[34px] w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-line bg-page px-3 font-ui text-[13px] font-medium text-ink shadow-[0_1px_2px_rgba(45,45,42,0.03)] transition-all hover:border-line-strong hover:bg-raised hover:text-ink active:scale-[0.99]"
+            title="新建聊天"
+            aria-label="新建聊天"
+          >
+            <Plus size={15} strokeWidth={2.4} className="text-accent-text transition-transform group-hover:scale-110" />
+            <span>新建聊天</span>
+          </button>
         </div>
+
+        {/* 展开的搜索框 */}
+        {isSearchActive && (
+          <div className="px-3 pb-2 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="relative">
+              <Search
+                size={13}
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-muted"
+              />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={query}
+                onChange={(e) => onQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    onQuery('')
+                    setShowSearch(false)
+                  }
+                }}
+                placeholder="筛选对话..."
+                aria-label="筛选对话"
+                className="h-[32px] w-full rounded-lg border border-line bg-page pr-8 pl-7 text-[12.5px] text-ink transition-colors placeholder:text-muted focus:border-line-strong focus:outline-none shadow-[0_1px_2px_rgba(45,45,42,0.02)]"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onQuery('')
+                    searchInputRef.current?.focus()
+                  }}
+                  aria-label="清空搜索"
+                  className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md p-1 text-muted hover:bg-raised hover:text-ink cursor-pointer"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="会话列表">
           {chats.length === 0 && (
             <p className="px-2 py-3 text-[12.5px] text-muted">
-              {query ? `没找到带「${query}」的会话。` : '还没有对话，点上面「新对话」开始。'}
+              {query ? `没找到带「${query}」的会话。` : '还没有对话，点上面「新建聊天」开始。'}
             </p>
           )}
           {GROUP_ORDER.filter((g) => groups.has(g)).map((g) => (
@@ -233,8 +283,15 @@ export function Sidebar({
                           </DropdownMenu.Item>
                           <DropdownMenu.Item
                             className="cursor-pointer rounded-md px-2.5 py-1.5 text-left text-[12.5px] text-danger outline-none data-[highlighted]:bg-ink/8"
-                            onSelect={() => {
-                              if (window.confirm('删除这个会话？记录会从 Hermes 会话库里删掉。'))
+                            onSelect={async () => {
+                              if (
+                                await confirmAction({
+                                  title: '删除这个会话？',
+                                  body: '记录会从 Hermes 会话库里物理删除，删了找不回来。',
+                                  confirmText: '删除',
+                                  danger: true,
+                                })
+                              )
                                 onDelete(c.id)
                             }}
                           >
@@ -309,18 +366,6 @@ export function Sidebar({
             </button>
           )}
         </nav>
-
-        {/* 底部：设置入口 */}
-        <div className="flex-none border-t border-line px-2 pt-1.5 pb-2">
-          <button
-            type="button"
-            onClick={onOpenSettings}
-            className="flex h-[32px] w-full cursor-pointer items-center gap-2.5 rounded-md px-2 text-left text-[12.5px] text-muted transition-colors hover:bg-raised hover:text-ink"
-          >
-            <Settings size={14} />
-            设置
-          </button>
-        </div>
       </aside>
     </>
   )

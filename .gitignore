@@ -17,3 +17,6 @@ uploads/
 .env
 .env.*
 !.env.example
+
+# 验证截图（agent 自检用，别再进仓库）
+web/verify-shots/

@@ -282,9 +282,101 @@ def add_custom(name: str, base_url: str, api_key: str, model_id: str, context_le
     return {k: v for k, v in item.items() if k != "api_key"} | {"has_key": bool(api_key)}
 
 
+def update_custom(key: str, name: str, model_id: str, context_length=None) -> dict:
+    name, model_id = name.strip(), model_id.strip()
+    if not model_id:
+        raise ValueError("模型 ID 不能为空")
+    manual = _manual_context(context_length)
+    with _lock:
+        data = _load()
+        # 1. 渠道下的模型：key 形如 custom:<channel_id>/<model_id>
+        if "/" in key and key.startswith("custom:"):
+            raw = key.split("custom:", 1)[1]
+            cid, old_mid = raw.split("/", 1)
+            channels = data.get("channels") or []
+            target = next((c for c in channels if str(c.get("id") or "") == cid), None)
+            if not target:
+                raise ValueError("未找到对应渠道")
+            models_list = target.get("models") or []
+            new_list = []
+            found = False
+            for m in models_list:
+                cur_mid = m.get("model_id") if isinstance(m, dict) else str(m)
+                if cur_mid == old_mid:
+                    found = True
+                    item: dict = {"model_id": model_id}
+                    if name:
+                        item["name"] = name
+                    elif isinstance(m, dict) and m.get("name"):
+                        item["name"] = m["name"]
+                    if manual is not None:
+                        item["context_length"] = manual
+                    elif isinstance(m, dict) and "context_length" in m:
+                        item["context_length"] = m["context_length"]
+                    new_list.append(item)
+                else:
+                    new_list.append(m)
+            if not found:
+                raise ValueError("未找到要修改的模型")
+            target["models"] = new_list
+            new_key = make_channel_key(cid, model_id)
+            cur = data.get("current") or {}
+            if cur.get("key") == key:
+                cur["key"] = new_key
+                data["current"] = cur
+            _save(data)
+            return {"key": new_key, "name": name or model_id, "model_id": model_id, "context_length": manual}
+
+        # 2. 独立自定义模型
+        custom = data.get("custom") or []
+        target = next((c for c in custom if c.get("key") == key), None)
+        if not target:
+            raise ValueError("未找到要修改的模型")
+
+        new_key = make_custom_key(model_id)
+        if new_key != key and any(c.get("key") == new_key for c in custom):
+            raise ValueError(f"已存在相同 ID 的模型「{model_id}」")
+
+        target["name"] = name or _pretty(model_id)
+        target["model_id"] = model_id
+        target["key"] = new_key
+        if manual is not None:
+            target["context_length"] = manual
+            target["context_source"] = "manual"
+        elif context_length is not None and str(context_length).strip() == "":
+            target.pop("context_length", None)
+            target.pop("context_source", None)
+            found = lookup_context_length(target.get("base_url") or "", target.get("api_key") or "", model_id)
+            if found:
+                target["context_length"] = found["context_length"]
+                target["context_source"] = found["source"]
+
+        cur = data.get("current") or {}
+        if cur.get("key") == key:
+            cur["key"] = new_key
+            data["current"] = cur
+
+        _save(data)
+        return {k: v for k, v in target.items() if k != "api_key"} | {"has_key": bool(target.get("api_key"))}
+
+
 def remove_custom(key: str) -> bool:
     with _lock:
         data = _load()
+        # 先按「页面上单独加的模型」精确删。它的 model_id 可能自带渠道前缀
+        # （custom:cline-pass/deepseek-v4.1-flash-1017），不能凭 key 里有 "/" 就当渠道模型 ——
+        # 那样会去 channels 里找一个不存在的渠道 id，返回 False，界面上表现为「点删除没反应」。
+        custom = data.get("custom") or []
+        left = [c for c in custom if c.get("key") != key]
+        if len(left) != len(custom):
+            data["custom"] = left
+            cur = data.get("current") or {}
+            if cur.get("key") == key:
+                cur.pop("key", None)
+                data["current"] = cur
+            _save(data)
+            return True
+
         if "/" in key and key.startswith("custom:"):
             # 属于某个渠道下的模型：从对应渠道的 models 列表里移除
             raw = key.split("custom:", 1)[1]
@@ -305,17 +397,7 @@ def remove_custom(key: str) -> bool:
             _save(data)
             return True
 
-        custom = data.get("custom") or []
-        left = [c for c in custom if c.get("key") != key]
-        if len(left) == len(custom):
-            return False
-        data["custom"] = left
-        cur = data.get("current") or {}
-        if cur.get("key") == key:
-            cur.pop("key", None)
-            data["current"] = cur
-        _save(data)
-        return True
+        return False
 
 
 # ── 渠道：一次填地址 + 密钥，把这个接口下的模型整批收进来 ─────────────────────

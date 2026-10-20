@@ -71,7 +71,6 @@ export function ApprovalCard({
               'flex-none font-mono text-[12.5px] tabular-nums',
               left <= 60 ? 'text-danger-text' : 'text-muted',
             )}
-            title="Hermes 给这一步的时限；到点按拒绝处理，这一轮就此结束"
           >
             {left > 0 ? `还剩 ${fmtLeft(left)}` : '已超时'}
           </div>

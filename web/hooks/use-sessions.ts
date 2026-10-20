@@ -4,13 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type Chat, type Compaction, type ContextStats, type Msg } from '@/lib/api'
 
 // ── 展示窗口的几个常量 ────────────────────────────────────────
-const FIRST_TURNS = 3 // 打开会话先给最近几个回合
-const OLD_TURNS = 1 // 不是今天的会话，只给 1 个回合
-const PAGE_TURNS = 3 // 点一次「展开更早」往前多要几个回合
+const FIRST_TURNS = 10 // 打开会话先给最近几个回合（10 回合约 150KB，服务端 ~40ms）
+const OLD_TURNS = 3 // 不是今天的会话，先给 3 个回合
+const PAGE_TURNS = 10 // 点一次「展开更早」往前多要几个回合
 const CACHE_MAX = 8 // 本地最多留几个会话的数据（按最近使用时间淘汰）
 const CACHE_IDLE_MS = 3 * 60 * 1000 // 今日用过的会话闲置这么久，本地就只留最后一个回合
-// ── 侧栏会话列表的分页 ────────────────────────────────────────
-const LIST_FIRST = 10 // 首屏只拉这么多条标题（以前是一次 100 条）
+const LIST_FIRST = 20 // 首屏默认加载 20 条会话标题
 const LIST_MORE = 20 // 点一次「更多」再加这么多
 const SEARCH_LIMIT = 100 // 搜索是主动检索，一次给够（不做分页）
 

@@ -465,6 +465,8 @@ class Turn:
         except Exception as exc:  # 读历史失败不该让整轮挂掉
             history = []
             self.emit(type="status", kind="warn", text=f"读取历史失败：{exc}")
+        # 上一轮被中止时库里会留下一条没有回复的 user，补占位闭合（见函数注释）
+        history = close_dangling_user_turn(history)
 
         hermes_approval.register_gateway_notify(sid, self._on_approval)
         # 把自己标成"能回答审批的前端会话"。不绑的话 Hermes 的 _is_gateway_approval_context()
@@ -604,6 +606,30 @@ class Turn:
             return bool(agent.steer(text))
         except Exception:
             return False
+
+
+DANGLING_USER_NOTE = "（上一轮被用户中止，未生成回复。）"
+
+
+def close_dangling_user_turn(history: list[dict] | None) -> list[dict] | None:
+    """库里最后一条是「没有回复的 user」时，补一条 assistant 占位把历史闭合。
+
+    这种形状只在上一轮被中止 / 异常结束时出现：Hermes 先把 user 消息落库，
+    回复要等这一轮跑完才落，被打断就没有对应 assistant。下一轮读出来的历史就是
+    「…, user(作废), user(新)」——Hermes 原生只对尾部是 tool 的情形补占位
+    （message_sanitization.close_interrupted_tool_sequence），相邻两条 user 它会在
+    发送前合并成一条（agent_runtime_helpers._merge_consecutive_users），于是模型
+    把作废的那条和新消息一起回答。
+
+    这里补的是 assistant 而不是删消息：用户看得到自己发过什么，历史又不再悬空，
+    新消息只答它自己。只改内存里这一份，不写库（库里保持原样，幂等）。
+    """
+    if not history:
+        return history
+    last = history[-1]
+    if isinstance(last, dict) and last.get("role") == "user":
+        return list(history) + [{"role": "assistant", "content": DANGLING_USER_NOTE}]
+    return history
 
 
 def _warmup_tools():

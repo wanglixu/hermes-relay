@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { api, type ModelsPayload, type RelayChannel, type RelayModel } from '@/lib/api'
 import { cn } from '@/lib/cn'
+import { buildChannels, hostOf, Chevron, Row, RowText, Tick, modelTitles, PANEL_SHADOW, PANEL_TITLE, BTN_GHOST, BTN_PRIMARY, type Channel, type SubTarget } from './model-picker-parts'
 
 /**
  * 输入框右下角那处「渠道 · 模型 · 思考强度」。
@@ -18,114 +19,6 @@ import { cn } from '@/lib/cn'
  * 选完立刻写进后端（relay 自己的配置文件），**下一轮对话生效**，不用重启服务；
  * 也只作用于这个网页 —— 命令行、桌面端、微信那几个入口不受影响。
  */
-
-const PANEL_SHADOW =
-  'shadow-[0_0_0_1px_rgba(45,45,42,0.05),0_4px_10px_rgba(45,45,42,0.10),0_24px_56px_-16px_rgba(45,45,42,0.38)]'
-
-const PANEL_TITLE = 'px-3 pt-2.5 pb-1 font-mono text-[11.5px] tracking-[0.03em] text-faint'
-
-const BTN_GHOST =
-  'cursor-pointer rounded-ctl border border-line-strong bg-input px-3 py-1.5 font-ui text-[12.5px] text-ink-2 transition-colors hover:border-muted hover:text-ink disabled:cursor-default disabled:opacity-50'
-const BTN_PRIMARY =
-  'cursor-pointer rounded-ctl border border-accent bg-accent px-3 py-1.5 font-ui text-[12.5px] text-on-accent transition-colors hover:border-accent-text hover:bg-accent-text disabled:cursor-default disabled:opacity-50'
-
-type Channel = { id: string; label: string; hint?: string; models: RelayModel[]; channel?: boolean }
-/** 左边子面板要显示的内容。`anchorY` = 触发它的那一行相对外层容器的 y，用来把子面板贴到那一行上。 */
-type SubTarget = { kind: 'models' | 'efforts'; channelId?: string; anchorY?: number }
-
-function hostOf(url?: string): string {
-  if (!url) return ''
-  try {
-    return new URL(url).host
-  } catch {
-    return url.replace(/^https?:\/\//, '').split('/')[0]
-  }
-}
-
-function buildChannels(models: RelayModel[]): Channel[] {
-  const out: Channel[] = []
-  const index = new Map<string, Channel>()
-  for (const m of models) {
-    const custom = m.source === 'custom'
-    const host = custom ? hostOf(m.base_url) : ''
-    // 渠道里带回来的模型（有 channel_id）单独成组，组名就是渠道名
-    const inChannel = Boolean(m.channel_id)
-    const id = inChannel ? `chan:${m.channel_id}` : custom ? `custom:${host || m.key}` : `hermes:${m.provider || ''}`
-    const label = inChannel
-      ? m.channel_name || host || '渠道'
-      : custom
-        ? host || m.name || '页面添加'
-        : m.provider || '未标注渠道'
-    let ch = index.get(id)
-    if (!ch) {
-      ch = { id, label, hint: custom ? m.base_url : undefined, models: [], channel: inChannel }
-      index.set(id, ch)
-      out.push(ch)
-    }
-    ch.models.push(m)
-  }
-  return out
-}
-
-function Chevron({ dir = 'down' }: { dir?: 'down' | 'right' | 'left' }) {
-  return (
-    <svg
-      width="9"
-      height="9"
-      viewBox="0 0 9 9"
-      aria-hidden="true"
-      className={cn('flex-none text-faint', dir === 'right' && '-rotate-90', dir === 'left' && 'rotate-90')}
-    >
-      <path d="M1.6 3.2 4.5 6.1 7.4 3.2" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function Row({
-  children,
-  onClick,
-  onMouseEnter,
-  onMouseLeave,
-  className,
-}: {
-  children: React.ReactNode
-  onClick?: () => void
-  onMouseEnter?: (e: React.MouseEvent<HTMLButtonElement>) => void
-  onMouseLeave?: () => void
-  className?: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      className={cn(
-        'flex w-full cursor-pointer items-center gap-2.5 border-0 bg-transparent px-3 py-2 text-left transition-colors hover:bg-panel',
-        className,
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-function RowText({ name, sub }: { name: string; sub?: string }) {
-  return (
-    <span className="min-w-0 flex-1">
-      <span className="block truncate text-[13px] text-ink">{name}</span>
-      {sub ? <span className="block truncate font-mono text-[11px] text-faint">{sub}</span> : null}
-    </span>
-  )
-}
-
-function Tick() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true" className="flex-none text-accent-text">
-      <path d="M1.6 5.9 4.2 8.4 9.4 2.9" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  )
-}
 
 export function ModelPicker({
   payload,
@@ -286,7 +179,8 @@ export function ModelPicker({
   const shown = picked || fallback
   const shownChannel = shown ? channels.find((c) => c.models.some((m) => m.key === shown.key)) : null
   const channelLabel = shownChannel?.label || ''
-  const modelLabel = shown?.name || default_model || '默认模型'
+  const shownModel = shown ? modelTitles(shown, channelLabel) : null
+  const modelLabel = shownModel?.id || default_model || '默认模型'
   const effortValue = current.effort || default_effort
   const effortLabel = efforts.find((e) => e.value === effortValue)?.label || effortValue
 
@@ -386,8 +280,14 @@ export function ModelPicker({
   const removeModel = async (key: string) => {
     setBusy(true)
     try {
-      await api.removeModel(key)
+      const res = await api.removeModel(key)
+      if (!res.ok) {
+        // 后端没删（例如这条属于某个渠道、该在渠道列表里删），别装作成功
+        say('没删掉：这条可能属于某个渠道，去「添加渠道 / 模型」的渠道列表里删', false)
+      }
       onChanged()
+    } catch (err) {
+      say(`删除失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setBusy(false)
     }
@@ -492,7 +392,6 @@ export function ModelPicker({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        title="选择渠道 / 模型 / 思考强度（只影响这个网页）"
         className="inline-flex max-w-[380px] cursor-pointer items-center gap-[5px] rounded-full border border-line-strong/60 bg-panel/75 px-2.5 py-[3px] font-ui text-[12px] text-muted shadow-[0_1px_2px_rgba(45,45,42,0.04)] transition-all hover:border-accent/40 hover:bg-raised hover:text-ink hover:shadow-[0_2px_4px_rgba(45,45,42,0.06)] active:scale-[0.99]"
       >
         {channelLabel ? (
@@ -501,7 +400,7 @@ export function ModelPicker({
             <span className="flex-none text-line-strong">·</span>
           </>
         ) : null}
-        <span className="min-w-0 truncate font-medium text-ink-2">{modelLabel}</span>
+        <span className="min-w-0 truncate font-mono text-[11.5px] text-ink-2">{modelLabel}</span>
         <span className="flex-none text-line-strong">·</span>
         <span className="flex-none font-medium text-accent-text">{effortLabel}</span>
         <Chevron />
@@ -801,11 +700,11 @@ export function ModelPicker({
                 {(subChannel?.models || []).map((m) => (
                   <div key={m.key} className="group/model relative">
                     <Row onClick={() => !busy && void selectModel(m)}>
-                      {/* 副标题是真实模型 ID；渠道名已经在上面的标题里，重复的前缀去掉 */}
-                      <RowText
-                        name={m.name}
-                        sub={subChannel?.label && m.model_id.startsWith(`${subChannel.label}/`) ? m.model_id.slice(subChannel.label.length + 1) : m.model_id}
-                      />
+                      {/* 主文本是真实模型 ID（渠道名已在标题里），页面上起的化名退成副标题 */}
+                      {(() => {
+                        const t = modelTitles(m, subChannel?.label)
+                        return <RowText name={t.id} sub={t.alias || undefined} />
+                      })()}
                       {m.key === current.key ? <Tick /> : null}
                       {(m.source === 'custom' || !!m.channel_id) && m.key !== current.key && (
                         <span

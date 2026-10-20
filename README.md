@@ -1,245 +1,214 @@
+<div align="center">
+
 # Hermes Relay
 
-**给 [Hermes Agent](https://hermes-agent.nousresearch.com/docs) 做的轻量网页外壳（thin shell）。**
+**给 [Hermes Agent](https://hermes-agent.nousresearch.com/docs) 打造的轻量级无头进程内网页外壳（Thin Shell）**
 
-它不重写 agent，也不另起一套数据：模型调用、工具执行、审批闸门、技能、记忆、会话库、上下文压缩，**全部直接用 Hermes 自己的**。这个项目只做三件事——把 Hermes 跑的一轮对话用 SSE 推到浏览器、把浏览器上的操作转回 Hermes 的接口、再补上几个 Hermes 自己没有的页面（工作台、模型与渠道管理）。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Next.js](https://img.shields.io/badge/Next.js-16.4-black?logo=next.js)](https://nextjs.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
+[![Design System](https://img.shields.io/badge/Theme-Warm%20Paper-D97706)](design-system/hermes-relay/MASTER.md)
 
-后端 7 个 Python 文件、约 4000 行，**只用标准库**；前端 Next.js 16 + Tailwind v4，约 9000 行 TS/TSX。
+[English Documentation](README.en.md) · [UI 规范](PRODUCT.md) · [设计系统](design-system/hermes-relay/MASTER.md)
 
-> 前提：本机要有一份能跑的 Hermes Agent。后端不是通过 HTTP 调 Hermes，而是用 Hermes 自带的 Python 在**同一个进程里**构造 `AIAgent`——这是核心设计（换来工具审批阻塞、模型反问、进程内回调这些只有同进程才有的能力），不是可以绕开的依赖。
+<br />
 
-## 为什么适合二次开发
+<img src="docs/images/chat-overview.png" alt="Hermes Relay 核心聊天主界面" width="100%" style="border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);" />
 
-- **进程内直连，不多一跳**：`server.py` → `agent_bridge.py` → `AIAgent` 都在同一个进程。工具回调、审批阻塞、clarify 反问就地在进程内桥接，没有网关 HTTP 的往返。
-- **后端零第三方依赖**：必须跑在 Hermes 自己的 venv 里（要 `import` 它的运行时），往那个环境装包等于动 Hermes 的依赖树、升级还可能被冲掉。所以后端只用 `ThreadingHTTPServer` + SSE，能长期跟着 Hermes 升级走。
-- **不另起数据**：会话、配置、技能、记忆都读 Hermes 自己的（`~/.hermes/state.db`、`config.yaml`、`skills/`、`memories/`）。网页里聊的会话，`hermes --resume` 能接着聊；反过来 CLI / Telegram 的会话也会出现在网页侧栏。
-- **一个模块一个文件，加功能有样可抄**：想加一个新视图，照 `workbench_api.py` 的样子写一个模块（纯标准库函数），在 `server.py` 注册几条路由，前端 `web/components/workbench/` 里加一个组件、在 `activity-bar.tsx` 的 `TABS` 里加一项就完事。
-- **前端分层清楚**：`web/components/{chat,workbench,layout,ui}`，配色/字体/间距全部走 `design-system/` 的令牌，不在组件里写死颜色。
-- **文档是写给 AI 的**：`AGENTS.md`（红线与流程）、`PRODUCT.md`（产品意图）。这个项目本身就是一路由 AI 改出来的——把仓库丢给 AI，它能自己接着干。
+</div>
 
-## 功能
+<br />
 
-**聊天**
+## 📖 核心理念
 
-- SSE 流式：正文与思考分开推、工具调用与结果、token 速率、生命周期状态
-- 审批卡片：agent 要执行命令/写文件时弹确认（一次性 / 本会话 / 总是 / 拒绝），与 Hermes 的审批闸门同一套
-- 模型反问（clarify）：逐题呈现、可多选、可跳过
-- 生成中插话（steer）、打断（interrupt）
-- 附件与原生识图：图片按原生多模态直接送进模型；点开有全屏灯箱
-- Markdown 渲染 + 代码高亮（shiki）、复制/重试、长回复折叠、自动吸底
+Hermes Relay 不重复制造 Agent，也不另立数据中心：模型调用、工具执行、审批阻断、技能、长期记忆、会话存储与上下文压缩，**全部直接复用 Hermes 运行时**。
 
-**会话**
+本项目专注做好三件事：
+1. **进程内同构直连**：后端 Python 服务直接跑在 Hermes 运行环境中，同进程构造 `AIAgent` 实例。工具执行回调、安全审批挂起、模型主动反问（Clarify）在进程内毫秒级响应，无需在多层代理之间跨网络重传上下文。
+2. **零第三方 Python 依赖**：后端纯使用 Python 标准库（`ThreadingHTTPServer` + SSE 流式管道），绝不往 Hermes 环境安装外部包，长期跟随 Hermes 上游升级无破坏。
+3. **沉浸式现代交互界面**：Next.js 16 + Tailwind v4 打造的「暖纸」（Warm Paper）视觉系统，针对高密度技术对话调校字阶、中英文排版与代码高亮，附带多渠道聚合管理与一体化工作台。
 
-- 与 CLI / Telegram 共用同一个会话库：列表、搜索、翻页、改名、删除
-- 展示窗口 + 「展开更早」分段加载；刷新后自动接上正在跑的那一轮（SSE 补发）
-- 每个会话派出去的子代理（subagent）会挂在会话上显示
+---
 
-**上下文**
+## ✨ 核心特性
 
-- 用量环：已用 token 取 Hermes 自己的权威计数，窗口与压缩阈值**问 Hermes 自己**（不自己猜口径）
-- 缓存命中率：按 Hermes 原生公式算，只算当前模型
-- 手动压缩上下文（可带关注点）
+### 💬 智能对话与流式推理
+- **思考过程与工具调用折叠**：区分正文流与思维链（Chain of Thought），支持工具调用参数与返回结果的分段收合查看。
+- **同进程审批闸门（Approval Card）**：Agent 请求执行 Shell 命令或写入系统文件时，实时弹出原生授权卡片（单次允许 / 当前会话 / 总是允许 / 拒绝）。
+- **模型主动反问（Clarify）**：交互式选项与自由输入，无缝桥接多轮决策意图。
+- **会话中插话（Steer）与中断（Interrupt）**：生成期间可随时下发指令纠偏，或精准停止流式输出。
+- **性能指标看板**：每轮回复实时追踪首字延迟（TTFT）、真实解码速度（Tok/s）与生成用时。
+- **权威上下文计量**：用量环与压缩阈值直连 Hermes 核心解析器，精准显示当前模型的前缀缓存命中率。
 
-**模型与渠道**
+<br />
 
-- 页面上切换模型与思考强度（五档），每轮生效，不用重启
-- 加渠道：填 endpoint + key，自动列出该渠道全部模型，一次保存；也支持单个模型
-- 删除模型 / 渠道（正在用的会拦一下）
-- 这些只写 relay 自己的 `models.json`，**不动 Hermes 全局 `config.yaml`**——命令行与微信/Telegram 端不受影响
+### 🎛️ 多渠道与模型聚合管理
+<div align="center">
+  <img src="docs/images/model-picker.png" alt="模型与渠道选择面板" width="85%" style="border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);" />
+</div>
 
-**工作台（四个视图）**
+- **即时聚合任何 OpenAI 兼容端点**：输入 Base URL + API Key 自动拉取全量模型列表，支持随时同步更新与删除。
+- **五档思考强度切换**：支持对支持 Reasoning 的模型按轮次调整思考强度（关闭、低、中、高、极高），下一轮对话立刻生效，无需重启服务。
+- **独立配置隔离**：所有在页面中管理的自定义渠道与模型存储在 `~/.hermes/hermes-relay/models.json`，**不修改 Hermes 全局的 `config.yaml`**，命令行、微信与 Telegram 客户端互不干扰。
 
-- 任务看板：SQLite 落地的看板（`~/.hermes/kanban.db`），增删改查、按状态筛选
-- 后台进程：进程列表与资源占用、Hermes 自己进程的状态
-- 定时任务：读 Hermes 的 cron（`~/.hermes/cron/jobs.json`），开关与「立即执行」
-- 产物沙箱：列出工作目录（默认 `~/workspace`）里的文件，方便看 agent 产出的东西
+<br />
 
-**设置**
+### 🛠️ 一体化工作台（Workbench）
+<div align="center">
+  <img src="docs/images/workbench-kanban.png" alt="工作台任务看板" width="85%" style="border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);" />
+</div>
 
-- 记忆文件：看 / 改 `memory`、`user`、`soul` 三份文件，改前自动留备份（保留最近 20 份）
-- 界面外观：暖纸配色与字体（自托管、按 `unicode-range` 切片）
+- **任务看板（Kanban）**：基于 SQLite 持久化本地落地，自由流转待办、进行中与已完成任务。
+- **定时任务（Cron）**：直接读取并控制 Hermes 的定时触发器（`~/.hermes/cron/jobs.json`），支持一键手动试跑与状态开关。
+- **后台进程监控**：实时呈现主机进程资源占用与 Hermes 守护状态。
+- **产物沙箱（Artifacts）**：直接浏览与取回 Agent 在工作区生成的代码文件与成果。
 
-**技能**：输入框打 `/` 出技能清单（读 Hermes 的 skills 目录）
+<br />
 
-## 架构
+### ⚙️ 设置与持久化记忆管理
+<div align="center">
+  <img src="docs/images/settings.png" alt="设置与自定义模型管理" width="85%" style="border-radius: 6px; box-shadow: 0 2px 12px rgba(0,0,0,0.06);" />
+</div>
+
+- **模型参数覆写**：支持单独修改任意模型的展示名、真实上游 ID 以及自定义上下文窗口上限。
+- **记忆三件套编辑**：在线检查与编辑 `memory`、`user`、`soul`，修改时自动建立滚动快照备份（自动保留最近 20 份版本）。
+- **字体与设计系统**：全站内置 Source Sans 3、Noto Sans SC 与更纱黑体（Sarasa Mono SC）分片字体，针对代码对齐与中英混排深度调校。
+
+---
+
+## 🏗️ 架构拓扑
 
 ```
-浏览器 ──SSE──▶ server.py ──▶ agent_bridge.py ──▶ AIAgent（同进程）
-                    │                                  ▲
-                    ├──▶ sessions.py ──▶ Hermes state.db
-                    └──▶ workbench_api.py ──▶ kanban.db / cron / 进程 / 产物
+浏览器 (Next.js 16 WebUI)
+   │
+   ├── [HTTP / SSE 流] ──▶ server.py (8788, 纯标准库)
+   │                           │
+   │                           ├──▶ agent_bridge.py
+   │                           │       │
+   │                           │       └──▶ AIAgent (同进程 Hermes 运行时)
+   │                           │
+   │                           ├──▶ sessions.py ──▶ ~/.hermes/state.db
+   │                           ├──▶ models.py   ──▶ ~/.hermes/hermes-relay/models.json
+   │                           └──▶ workbench_api.py ──▶ kanban.db / cron / 进程
+   │
+   └── [静态资源 / 前端] ──▶ Next.js Standalone (3220)
 ```
 
-nginx 按路径分两路：`/api/` 进后端（8788），页面与前端资源（`/`、`/_next/static/`）进前端（3220）。
+Nginx 在前端充当反向代理与网关：
+- `/api/` 路由直连 Python 后端（`8788`），关闭缓冲（`proxy_buffering off`）以保障 SSE 流式极速出字。
+- `/`、`/_next/static/` 及其他前端静态资源转发至 Next.js Standalone 服务（`3220`）。
 
-| 文件 | 干什么 |
-| --- | --- |
-| `server.py` | 标准库 HTTP 服务：路由、SSE、附件上传、静态回退 |
-| `agent_bridge.py` | 解析模型渠道 → 构造 AIAgent → 跑一轮 → 回调转事件；审批 / clarify 桥、生成中插话 |
-| `sessions.py` | 会话列表 / 历史 / 新建 / 改名 / 删除（读写 Hermes 自己的库）、展示窗口、图片记录 |
-| `context.py` | 上下文用量（窗口 / 阈值 / 缓存命中）与技能清单 |
-| `compress.py` | 手动压缩上下文 |
-| `workbench_api.py` | 工作台：看板 / 进程 / 定时任务 / 产物沙箱 |
-| `models.py` | 页面上的模型与渠道（存 `models.json`） |
-| `web/` | Next.js 16（App Router）+ Tailwind v4，standalone 构建 |
-| `design-system/hermes-relay/MASTER.md` | UI 设计系统（配色 / 字体 / 间距），改界面前先看它 |
-| `deploy/` | systemd 单元 + nginx 站点参考配置 |
+---
 
-运行数据在 `~/.hermes/hermes-relay/`：`uploads/`（附件与 `index.json`）、`models.json`（页面加的模型与渠道）、`metrics.json`（首字延迟 / 耗时 / 输出 token 埋点）、`partials.json`、`compactions.json`、`memory-backups/`。
+## 🚀 快速上手
 
-## 跑起来
+### 环境要求
+- 已正确配置并能运行的 [Hermes Agent](https://hermes-agent.nousresearch.com/docs)
+- Node.js 20.9+
+- Nginx（推荐生产反代）
+- `p7zip-full`（用于自托管字体切片解压，`sudo apt install p7zip-full`）
 
-前置：能跑的 Hermes Agent、Node 20.9+（Next.js 16 要求）、nginx、`7z`（生成字体用，`apt install p7zip-full`）。
-
+### 1. 克隆代码
 ```bash
-# 1. 拿代码（路径随你，示例用 /opt/hermes-relay）
-git clone https://github.com/wanglixu/hermes-relay.git /opt/hermes-relay && cd /opt/hermes-relay
-
-# 2. 生成自托管字体（字体文件不进仓库，新环境必须先跑；约 15 分钟）
-web/scripts/fetch-fonts.sh
-
-# 3. 构建前端：产物落在 web/.next/standalone，生产跑的就是它
-cd web && npm ci && npm run build
-cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/   # standalone 不含静态资源，要手动拷
-
-# 4. 试跑后端（必须用 Hermes 自带的 Python）
-cd /opt/hermes-relay && /usr/local/lib/hermes-agent/venv/bin/python server.py
-curl -s http://127.0.0.1:8788/api/health     # 期望 {"ok": true}
-
-# 5. 装成 systemd 服务（先按实际路径改两个单元文件）
-sudo cp deploy/hermes-relay.service deploy/hermes-relay-web.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now hermes-relay hermes-relay-web
-
-# 6. nginx：拷 deploy/nginx-relay.conf 到 sites-available，改 server_name 和证书路径后 reload
+git clone https://github.com/wanglixu/hermes-relay.git /opt/hermes-relay
+cd /opt/hermes-relay
 ```
 
-环境变量见 [`.env.example`](.env.example)：**全部可选**，不设就走默认值（监听 `127.0.0.1:8788`、会话库取 Hermes 自己的 `~/.hermes/state.db`、工作台看 `~/workspace`）。
+### 2. 准备自托管字体分片
+项目采用无外部 CDN 的自托管中英文与等宽字体，新环境需首先运行字体拉取脚本（初次下载并生成约需数分钟）：
+```bash
+bash web/scripts/fetch-fonts.sh
+```
 
-> **后端必须用 Hermes 自带的 Python**（默认 `/usr/local/lib/hermes-agent/venv/bin/python`，可用 `HERMES_AGENT_DIR` 改），不能用系统 python3——进程内要 import Hermes 的运行时。
-
-## 接口
-
-后端（8788）的 HTTP 接口：
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/health` | 存活检查 |
-| GET | `/api/config` | 当前解析出的模型 / 渠道 |
-| GET | `/api/models` | 可选模型与渠道清单、当前选择、思考强度档位 |
-| GET | `/api/skills` | 技能清单（输入框 `/` 菜单用它） |
-| GET | `/api/chats?limit=&offset=&q=` | 会话列表（`q` 搜索，默认 50 条、可翻页） |
-| POST | `/api/chats` | 新建会话 → `{id}`（懒创建：不落库，发第一条消息才写进去） |
-| GET | `/api/chats/<id>?turns=&before=` | 会话详情 + 展示窗口（分段加载 + 「展开更早」） |
-| GET | `/api/chats/<id>/stream?after=N` | SSE 补发（刷新后接上正在跑的这轮） |
-| GET | `/api/chats/<id>/context` | 上下文用量（窗口 / 阈值 / 缓存命中） |
-| POST | `/api/chats/<id>/turn` | **发一条消息，SSE 流式返回**（body `{text, attachments:[{path,mime}]}`） |
-| POST | `/api/chats/<id>/interrupt` | 打断当前这一轮 |
-| POST | `/api/chats/<id>/steer` | 生成中插话（body `{text}`） |
-| POST | `/api/chats/<id>/compress` | 手动压缩上下文（body `{focus?}`，同步返回） |
-| PATCH | `/api/chats/<id>` | 改名（body `{title}`） |
-| DELETE | `/api/chats/<id>` | 删除（物理删除，不可逆） |
-| POST | `/api/approvals` | 审批答复（body `{session_id, request_id, choice}`，choice = `once/session/always/deny`） |
-| POST | `/api/clarify` | 回答模型的反问（body `{session_id, clarify_id, response}`） |
-| POST | `/api/upload?session=&name=` | 上传附件（原始字节）→ `{path,name,mime}` |
-| GET | `/api/uploads/<会话>/<文件>` | 取回已上传的图片 |
-| POST | `/api/models/select` | 切换当前模型 / 思考强度（body `{key?, effort?}`） |
-| POST | `/api/models/test` | 测 endpoint + key，顺便列该接口提供的模型（body `{base_url, api_key, model_id?}`） |
-| POST | `/api/models/add` | 加单个自定义模型（body `{name, base_url, api_key, model_id, context_length?}`） |
-| POST | `/api/models/remove` | 删除页面上自己加的模型（body `{key}`） |
-| POST | `/api/channels/add` | 加一个渠道（body `{name, base_url, api_key}`，自动列模型） |
-| POST | `/api/channels/sync` | 重新同步渠道的模型列表（body `{id}`） |
-| POST | `/api/channels/remove` | 删除渠道（body `{id}`） |
-| GET | `/api/kanban/tasks?status=` | 看板任务列表 |
-| POST | `/api/kanban/tasks` | 新建任务 |
-| PATCH | `/api/kanban/tasks/<id>` | 更新任务（状态 / 内容） |
-| DELETE | `/api/kanban/tasks/<id>` | 删除任务 |
-| GET | `/api/cron/jobs` | 定时任务列表（读 Hermes 的 cron） |
-| POST | `/api/cron/toggle` | 开关某个任务（body `{id, enabled}`） |
-| POST | `/api/cron/run` | 立即执行（body `{id}`） |
-| GET | `/api/system/processes` | 进程列表与资源占用 |
-| GET | `/api/system/logs?file=&lines=` | 读日志尾部（默认 `agent.log`、150 行） |
-| GET | `/api/artifacts/files` | 工作目录里的文件列表 |
-| POST | `/api/admin/restart` | 让后端在答完当前这轮后自动重启（无 body） |
-
-SSE 事件类型：`delta`（正文增量）、`reasoning`（思考增量）、`tool_start` / `tool_end` / `tool`（工具）、`status`（生命周期）、`approval`（要你授权）、`clarify` / `clarify_end`（模型反问）、`error`、`done`（带用量）、`eof`（这一轮结束）。
-
-前端（3220）另有三个只读的本地接口，直接读盘、不绕后端：`/local-api/memory`（记忆文件与备份）、`/local-api/file`（预览文件）、`/local-api/hermes-status`（Hermes 网关是否在跑）。
-
-## 二次开发
-
-**改前端**
-
+### 3. 构建前端
 ```bash
 cd web
-npm run dev                    # 开发服务器，127.0.0.1:3220
-bash scripts/dev-restart.sh    # 构建 + 拷进 standalone + 重启本机自测
+npm ci
+npm run build
+
+# Standalone 部署模式需要拷贝静态资源目录
+cp -r .next/static .next/standalone/.next/
+cp -r public .next/standalone/
+cd ..
 ```
 
-> **只改源码不构建等于没改**：生产跑的是 `web/.next/standalone` 的产物，改完必须跑一次 `dev-restart.sh`（或走 CI）。
-> 静态资源文件名带内容哈希，正常不会拿到旧版；如果前面挂了 CDN 并且按路径缓存，记得让 HTML 走 `no-store`。
-
-**改后端**
-
-改完要重启才生效。**不要用定时器，也不要在 relay 托管的会话里 `systemctl restart`**——服务的 `KillMode=control-group` 会连执行者一起杀掉。正路是 `POST /api/admin/restart`：它只写一个标记文件，等服务把当前这一轮答案完整发完（`eof` 之后）再自己重启，不用掐表等。
-
-**加一个新视图（工作台那样的）**
-
-1. 后端：新建 `my_api.py`（纯标准库函数），在 `server.py` 的 `_api_get` / `do_POST` 里加两条路由；
-2. 前端：`web/components/workbench/my-view.tsx` 写组件，`web/lib/api.ts` 加取数函数；
-3. 导航：在 `web/components/layout/activity-bar.tsx` 的 `TABS` 里加一项，在 `web/app/page.tsx` 里接上这个视图。
-
-**样式**：颜色、间距、字体全部来自 `design-system/hermes-relay/MASTER.md` 的令牌，改配色请改那里的 CSS 变量，不要在组件里写死颜色。
-
-## 几个刻意的设计（别改坏了）
-
-1. **不用 FastAPI**：进程内必须跑在 Hermes 自带的 Python 环境里，往那个环境装第三方包等于动 Hermes 自己的依赖树，升级还可能被冲掉。标准库 `ThreadingHTTPServer` + SSE 完全够用。
-2. **不高频打扰 agent**：浏览器不轮询，所有更新靠 SSE 单向推；会话列表和历史消息直接读 SQLite；一条消息只跑一次 agent；标题不调用模型生成。
-3. **流式性能**：token 先攒进 `useRef`，每 80ms 才刷一次 React state；消息组件 memo 化，只有正在输出的那条会重渲染。不要改成「每个 token 一次 setState」。
-4. **自动吸底**：只有当用户本来就贴着底部时才自动滚，往上翻过就不抢滚动位置（`stick` ref）。
-5. **审批不能省**：agent 要执行命令时会在自己的线程里阻塞等待。网页弹确认卡片 → `POST /api/approvals` → 解除阻塞。这是安全相关的，不是可选项。
-6. **窗口与用量不自己猜**：上下文窗口、压缩阈值、缓存命中率都问 Hermes 自己的解析函数，而不是自己维护一份模型表——不然迟早跟 Hermes 的升级对不上。
-
-## 已知限制
-
-- **一个会话同时只能跑一轮**（Hermes 的跨进程 turn lease）。同一会话在别的入口（CLI / 上游 webui / Telegram）正跑着时，这里新开的一轮会等那边的会话锁，界面上表现为一直转圈。
-- **默认模型与渠道在进程启动时解析一次并缓存**，改了 Hermes 的 `config.yaml` 要重启后端（页面上自己加的模型/渠道存在 `models.json`，每轮生效、不用重启）。
-- **侧栏列的是 Hermes 里所有 `webui / cli / telegram / discord / slack / api_server` 会话**——共用历史的代价。想只看某一类，改 `sessions.py` 里的 `LISTED_SOURCES`。
-- **附件只存文件、不进消息正文**：发出去的图片刷新后靠后端 uploads 记录（按时间戳 ±120 秒匹配）恢复显示，能看；但附件本身不能再编辑，关联也依赖时间戳。
-- **主要面向 Chrome 桌面端**：部分动效用了 Chrome 较新的特性（`@starting-style` 等），Safari / Firefox 上会优雅退化。
-- **会话删除是物理删除，不可逆**。库没被 `VACUUM` 过时，误删的内容还能从空闲页里捞回来（见下）。
-- **不做登录**：默认假设它只监听回环，或者前面有别的网关（参考 nginx 配置里那段可选接法）。
-
-## 验证脚本
+### 4. 试运行后端服务
+> **注意**：必须使用 Hermes Agent 自带的 Python 环境启动后端，以确保能够在进程内直接导入 Hermes 的运行时模块。
 
 ```bash
-# 一轮纯文字（命令行跑，不开服务）
-/usr/local/lib/hermes-agent/venv/bin/python scripts/smoke_turn.py "只回复两个字：收到"
-
-# 原生识图：现造一张左红右蓝的图，看模型认不认得出
-/usr/local/lib/hermes-agent/venv/bin/python scripts/smoke_image.py
-
-# 量流式节奏（首字延迟 / 每段间隔）；走公网时用 PROBE_BASE + RELAY_COOKIE
-/usr/local/lib/hermes-agent/venv/bin/python scripts/probe_stream.py
-
-# 后端接口回归（跨站拦截、参数校验等）
-/usr/local/lib/hermes-agent/venv/bin/python scripts/verify_hardening.py
-
-# 上下文用量/窗口/缓存命中的离线回归（不连模型，纯算）
-/usr/local/lib/hermes-agent/venv/bin/python scripts/test_context_fixes.py
-
-# 误删会话抢救（先拷库副本再跑）
-/usr/local/lib/hermes-agent/venv/bin/python scripts/recover_deleted_session.py --db <库副本> --sid <会话id> --markdown x.md
+/usr/local/lib/hermes-agent/venv/bin/python server.py
+# 另开终端验证存活探针：
+curl -s http://127.0.0.1:8788/api/health
+# 期望返回: {"ok": true}
 ```
 
-## 部署要点
+### 5. 部署 Systemd 服务
+参考并根据实际目录调整 `deploy/` 下的系统单元：
+```bash
+sudo cp deploy/hermes-relay.service /etc/systemd/system/
+sudo cp deploy/hermes-relay-web.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hermes-relay hermes-relay-web
+```
 
-- **字体**：中英文字体（Source Sans 3 / Noto Sans SC / Sarasa Mono SC）都是自托管并按 `unicode-range` 切片，**文件本身不入库**——所以新环境构建前必须先跑 `web/scripts/fetch-fonts.sh`，否则 `next build` 会在找字体那一步失败。
-- **路由分流**：`/api/` → 后端 8788 且 `proxy_buffering off`（否则 SSE 的字会被攒住、看着像「一下子全蹦出来」）；`/` 与 `/_next/static/` → 前端 3220。
-- **登录/鉴权**：本项目不做登录。参考配置里那段 `auth_request`（指向自建 cookie 网关）是可选接法——不需要就整段删掉。
-- **缓存**：HTML 与 `/api/` 必须 `private, no-store`，否则改了界面看不到新版；带内容哈希的 `/_next/static/` 可以放心长缓存。
-- **Cloudflare（可选）**：用它的话别让它缓存 HTML，并让 nginx 信任它的真实 IP 段（参考配置里已有 `set_real_ip_from`）。
-- **改完后端重启**：走 `POST /api/admin/restart`，别用 `systemctl restart`（见上）。
+### 6. 配置 Nginx 反向代理
+将 `deploy/nginx-relay.conf` 复制到 `/etc/nginx/sites-available/`，配置您的域名与证书后重载：
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-## 许可
+---
 
-[MIT](LICENSE)
+## 📡 后端 API 接口契约
+
+| 方法 | 接口路径 | 说明 |
+| :--- | :--- | :--- |
+| `GET` | `/api/health` | 存活健康检查 |
+| `GET` | `/api/config` | 获取当前解析出的主模型与配置 |
+| `GET` | `/api/models` | 可选模型、自定义渠道清单、当前激活项与思考档位 |
+| `POST` | `/api/models/select` | 切换当前模型或调整思考强度（`{key?, effort?}`） |
+| `POST` | `/api/models/test` | 连通性测试并探寻该端点支持的模型列表 |
+| `POST` | `/api/models/add` | 新增单个自定义模型端点 |
+| `POST` | `/api/models/update` | 修改自定义模型的真实 ID、名称或上下文窗口 |
+| `POST` | `/api/models/remove` | 移除自定义模型 |
+| `POST` | `/api/channels/add` | 接入并枚举一个 OpenAI 兼容渠道 |
+| `POST` | `/api/channels/sync` | 重新同步指定渠道的模型列表 |
+| `POST` | `/api/channels/remove` | 移除指定渠道 |
+| `GET` | `/api/chats?limit=&offset=&q=` | 分页与全文检索历史会话列表 |
+| `POST` | `/api/chats` | 预分配会话 ID（**懒创建模式**：仅发首条消息时落库） |
+| `GET` | `/api/chats/<id>?turns=&before=` | 获取会话展示窗口（支持增量拉取历史） |
+| `GET` | `/api/chats/<id>/stream?after=N` | SSE 断线重连与事件补发机制 |
+| `GET` | `/api/chats/<id>/context` | 当前会话的权威上下文用量与缓存命中率 |
+| `POST` | `/api/chats/<id>/turn` | **发起对话轮次**（SSE 流式实时推流） |
+| `POST` | `/api/chats/<id>/interrupt` | 即时打断当前生成轮次 |
+| `POST` | `/api/chats/<id>/steer` | 生成中下发插话指令（中途动态修正模型方向） |
+| `POST` | `/api/chats/<id>/compress` | 手动执行上下文摘要压缩（支持焦点引导） |
+| `PATCH` | `/api/chats/<id>` | 重命名会话标题 |
+| `DELETE` | `/api/chats/<id>` | 彻底物理删除会话 |
+| `POST` | `/api/approvals` | 审批答复（`once` / `session` / `always` / `deny`） |
+| `POST` | `/api/clarify` | 响应模型的决策反问 |
+| `POST` | `/api/upload?session=&name=` | 附件与图片上传（支持原生多模态识别） |
+| `GET` | `/api/kanban/tasks?status=` | 工作台任务看板 CRUD |
+| `GET` | `/api/cron/jobs` | 定时任务列表与开关调度 |
+| `GET` | `/api/system/processes` | 主机进程与 Hermes 运行状态监控 |
+| `POST` | `/api/admin/restart` | **优雅重启指令**：等待当前轮次安全结束后排队重启服务 |
+
+---
+
+## 💡 核心设计与考量
+
+1. **同进程回调与异步转接**：
+   `agent_bridge.py` 内部维护了阻塞队列与事件订阅。当 Agent 触发工具执行需要用户确认时，Worker 线程在内存中安全挂起，直到前端通过 `/api/approvals` 发出回调解除阻塞，避免了跨网络长轮询的不可靠状态。
+2. **渐进式懒创建（Lazy Creation）**：
+   点击“新建会话”仅在前端预置临时 Draft ID，绝不预先向数据库写入空条目。只有当用户真正发出第一句消息时才落库持久化，防止历史侧栏残留大量空白对话。
+3. **流式节流与零卡顿渲染**：
+   在前端 `use-turn-stream.ts` 中，SSE 高频推送的 Delta 片段首先暂存于 `useRef` 缓冲区，每 80ms 批量同步一次 React 渲染树；同时对非活动消息应用严格的 `memo` 保护，即使千字长文在低配设备上依然保持丝滑流畅。
+4. **900ms 停止守卫（Stop Guard）**：
+   解决用户因快速连击发送键导致“误触新生成的停止键”而中断会话的常见交互痛点。
+
+---
+
+## 📄 许可证
+
+本项目基于 [MIT 许可证](LICENSE) 开源。欢迎参与贡献与二次开发！
