@@ -174,15 +174,16 @@ export function ModelPicker({
   if (!payload) return null
 
   const { current, efforts, default_model, default_effort } = payload
-  const picked = payload.models.find((m) => m.key === current.key) || null
-  const fallback = payload.models.find((m) => m.is_default) || null
+  const modelsList = payload.models || []
+  const picked = modelsList.find((m) => m.key === current.key) || null
+  const fallback = modelsList.find((m) => m.is_default) || null
   const shown = picked || fallback
-  const shownChannel = shown ? channels.find((c) => c.models.some((m) => m.key === shown.key)) : null
+  const shownChannel = shown ? channels.find((c) => (c.models || []).some((m) => m.key === shown.key)) : null
   const channelLabel = shownChannel?.label || ''
   const shownModel = shown ? modelTitles(shown, channelLabel) : null
   const modelLabel = shownModel?.id || default_model || '默认模型'
   const effortValue = current.effort || default_effort
-  const effortLabel = efforts.find((e) => e.value === effortValue)?.label || effortValue
+  const effortLabel = (efforts || []).find((e) => e.value === effortValue)?.label || effortValue
 
   // 淡出期间沿用上一次的内容
   const shownSub = sub || lastSub.current
