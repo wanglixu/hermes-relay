@@ -10,7 +10,7 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 [![Design System](https://img.shields.io/badge/Theme-Warm%20Paper-D97706)](design-system/hermes-relay/MASTER.md)
 
-[中文说明文档](README.md) · [UI Specification](PRODUCT.md) · [Design System](design-system/hermes-relay/MASTER.md)
+[中文说明文档](README.md) · [UI Specification](PRODUCT.md) · [Design System](design-system/hermes-relay/MASTER.md) · **[:point_right: Live demo](https://wanglixu.github.io/hermes-relay/)**
 
 <br />
 
@@ -19,6 +19,25 @@
 </div>
 
 <br />
+
+## 🧪 Try it first: static live demo
+
+Don't want to install anything? **[:point_right: Live demo](https://wanglixu.github.io/hermes-relay/)** is a purely static
+page (`docs/`, served by GitHub Pages) that replays the UI and its interactions with front-end mock data —
+**no backend, no model, no API key**:
+
+- Session list, search, date grouping, collapsible sub-agents, rename / delete
+- The streamed `reasoning → tool → answer` sequence: live `≈ tok/s`, time-to-first-token, final token rate
+- Approval cards (what the command does / risk / raw command / four choices) and clarify cards
+- Model & reasoning-effort panel, context ring, send / steer / stop, image lightbox, file path preview
+
+Every reply in the demo is a **pre-recorded script** — hit “重放这轮回复” in the top bar to watch it stream
+character by character. All content is fictional; the real app is driven by backend SSE and consumes the same
+`parts` (reason / tool / text) structure.
+
+> The demo falls back to system fonts to stay dependency-free; the real app self-hosts its Latin, CJK and mono fonts.
+
+---
 
 ## 📖 Core Philosophy
 

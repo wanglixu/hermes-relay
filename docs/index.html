@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Relay · 静态演示</title>
+    <meta
+      name="description"
+      content="Hermes Relay 的静态交互演示：会话列表、思考与工具折叠、流式回复、审批卡片、模型与思考强度选择。数据为虚构，全部在前端回放。"
+    />
+    <meta name="theme-color" content="#fbfaf7" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238c5a3b'/%3E%3Ctext x='16' y='22' font-family='system-ui' font-size='17' font-weight='700' text-anchor='middle' fill='%23fbfaf7'%3ER%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./demo/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- 最左侧功能栏（内容由 app.js 生成，图标与真实项目一致） -->
+      <aside class="activity" id="activity" aria-label="功能导航栏"></aside>
+
+      <div class="work">
+        <div class="shell">
+          <!-- 会话侧栏 -->
+          <aside class="sidebar" id="sidebar">
+            <div class="side-head">
+              <span class="title">聊天</span>
+              <div class="tools">
+                <button class="icon-btn-ghost" id="searchToggle" title="搜索" aria-label="搜索"></button>
+              </div>
+            </div>
+
+            <div class="side-new">
+              <button id="newChat" title="新建聊天" aria-label="新建聊天"></button>
+            </div>
+
+            <div class="side-search" id="searchWrap" hidden>
+              <div class="search-box">
+                <input id="searchInput" type="text" placeholder="筛选对话..." aria-label="筛选对话" />
+              </div>
+            </div>
+
+            <nav id="chatList" aria-label="会话列表"></nav>
+          </aside>
+          <div class="scrim" id="scrim" data-open="false"></div>
+
+          <main>
+            <header class="topbar">
+              <button class="hamburger" id="hamburger" aria-label="打开会话列表"></button>
+              <h1 id="chatTitle">折叠动效与 tok/s 口径</h1>
+              <span class="demo-badge">静态演示</span>
+              <button class="demo-act" id="replayBtn" title="把这一轮的思考 / 工具 / 正文重新流式演一遍">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+                重放这轮回复
+              </button>
+              <span class="status" id="linkStatus" data-link="idle">
+                <span class="dot"></span><span id="linkText">运行中</span>
+              </span>
+            </header>
+
+            <div class="stream-wrap">
+              <div class="msg-stream" id="stream">
+                <div class="stream-spacer"></div>
+                <div class="stream-col" id="streamCol"></div>
+              </div>
+            </div>
+
+            <!-- 审批 / 反问卡片：贴住输入框上方，不塞进消息流 -->
+            <div class="card-slot" id="cardSlot"></div>
+
+            <!-- 输入区 -->
+            <div class="composer-wrap" id="composerWrap">
+              <div class="composer-box" id="composerBox">
+                <button class="icon-btn raised" id="attachBtn" aria-label="添加图片"></button>
+                <textarea id="input" rows="1" placeholder="说点什么..."></textarea>
+
+                <div class="ring-wrap">
+                  <button class="ring" id="ringBtn" aria-label="上下文用量">
+                    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+                      <circle cx="13" cy="13" r="9" fill="none" stroke="var(--color-line)" stroke-width="2.6" />
+                      <circle
+                        id="ringArc"
+                        cx="13"
+                        cy="13"
+                        r="9"
+                        fill="none"
+                        stroke="var(--color-accent)"
+                        stroke-width="2.6"
+                        stroke-linecap="round"
+                        stroke-dasharray="0 56.5"
+                        transform="rotate(-90 13 13)"
+                      />
+                    </svg>
+                    <span class="ring-pct" id="ringPct">—</span>
+                  </button>
+                  <div class="ring-panel" id="ringPanel" data-open="false">
+                    <div class="row"><span class="k">上下文已用</span><span class="v" id="ringUsed">—</span></div>
+                    <div class="bar"><i style="width: 0%"></i></div>
+                    <div class="row"><span class="k">缓存命中</span><span class="v" id="ringCache">—</span></div>
+                    <div class="row"><span class="k">压缩线</span><span class="v">80%</span></div>
+                    <div class="hint">
+                      命中率 = 命中 ÷（未命中 + 命中 + 写入），只算主对话。上游不返回缓存字段时显示「无数据」。
+                      <div style="margin-top: 8px"><button class="btn-line" id="compressBtn">压缩上下文</button></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="busy-actions" id="busyActions" style="display: none">
+                  <button class="pill-btn" id="steerBtn">插话</button>
+                  <button class="pill-btn stop" id="stopBtn">停止</button>
+                </div>
+                <button class="icon-btn send" id="sendBtn" aria-label="发送"></button>
+              </div>
+
+              <div class="meta-row">
+                <span class="meta-left"><span id="cacheHit">缓存命中 88%</span></span>
+                <button class="model-trigger" id="modelTrigger" aria-label="选择模型与思考强度">
+                  <span class="channel" id="modelChannel">cline-pass</span>
+                  <span class="sep">·</span>
+                  <span class="model" id="modelName">deepseek-v4.1-flash</span>
+                  <span class="sep">·</span>
+                  <span class="effort" id="modelEffort">中</span>
+                  <svg class="caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                </button>
+              </div>
+
+              <!-- 模型 / 强度面板（组件常驻 DOM，只切 data-open） -->
+              <div class="pop" id="modelPop" data-open="false" role="dialog" aria-label="模型与思考强度"></div>
+            </div>
+          </main>
+
+          <!-- 点正文里的文件路径时从右边滑出 -->
+          <aside class="preview" id="preview" hidden></aside>
+        </div>
+      </div>
+    </div>
+
+    <div class="lightbox" id="lightbox" data-open="false"><img id="lightboxImg" alt="放大查看" /></div>
+    <div class="modal" id="modal" hidden></div>
+
+    <script src="./demo/app.js"></script>
+  </body>
+</html>

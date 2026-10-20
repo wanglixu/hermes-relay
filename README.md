@@ -10,7 +10,7 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
 [![Design System](https://img.shields.io/badge/Theme-Warm%20Paper-D97706)](design-system/hermes-relay/MASTER.md)
 
-[English Documentation](README.en.md) · [UI 规范](PRODUCT.md) · [设计系统](design-system/hermes-relay/MASTER.md)
+[English Documentation](README.en.md) · [UI 规范](PRODUCT.md) · [设计系统](design-system/hermes-relay/MASTER.md) · **[:point_right: 在线演示](https://wanglixu.github.io/hermes-relay/)**
 
 <br />
 
@@ -19,6 +19,23 @@
 </div>
 
 <br />
+
+## 🧪 先试试：静态在线演示
+
+不想先跑起来？**[:point_right: 在线演示](https://wanglixu.github.io/hermes-relay/)** 是纯静态页面（`docs/`，GitHub Pages），
+用前端假数据把界面与交互完整回放了一遍 —— **不需要后端、不需要模型、不需要密钥**：
+
+- 会话列表、搜索、按日期分组、子代理折叠、会话重命名 / 删除
+- 回复里的「思考 → 工具 → 正文」流式过程：实时 `≈ tok/s`、首字时间、答完的定稿速度
+- 权限审批卡片（这条命令要做什么 / 风险 / 命令原文 / 四个选项）与模型反问卡片
+- 模型与思考强度面板、上下文用量环、发送 / 插话 / 停止、图片放大、文件路径预览
+
+演示里的每条回复都是**预置脚本**：点顶栏「重放这轮回复」就能看它怎么一个字一个字流出来。
+数据与文案全部虚构；真实项目由后端 SSE 驱动，前端消费的是同一套 `parts`（reason / tool / text）数据结构。
+
+> 演示站为了零外部依赖，字体退回系统字体栈；真实项目的拉丁 / 中文 / 等宽三套字体是自托管的。
+
+---
 
 ## 📖 核心理念
 
